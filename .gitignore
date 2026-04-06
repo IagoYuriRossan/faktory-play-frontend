@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+.vite/
+.cache/
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# Firebase config files (contain credentials, use .env.example as template)
+firebase-applet-config.json
+
+# Firebase debug logs
+firebase-debug.log*
+.firebase/
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
