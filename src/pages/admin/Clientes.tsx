@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, Search, MoreVertical, Building2, Loader2, X, Check } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { auth } from '../../utils/firebase';
-import { db } from '../../utils/firebase';
-import { collection, getDocs, doc, setDoc } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
+import { api } from '../../utils/api';
 import { Company } from '../../@types';
 import { fetchAddressByCEP, formatCEP, formatCNPJ, isValidCNPJ, onlyDigits, validateCNPJExists } from '../../utils/validators';
 
@@ -29,14 +26,10 @@ export default function AdminClientes() {
   const fetchCompanies = async () => {
     setLoading(true);
     try {
-      const querySnapshot = await getDocs(collection(db, 'companies'));
-      const companiesData = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as Company));
+      const companiesData = await api.get<Company[]>('/api/companies');
       setCompanies(companiesData);
     } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'companies');
+      console.error('Error fetching companies:', error);
     } finally {
       setLoading(false);
     }
@@ -73,9 +66,7 @@ export default function AdminClientes() {
     
     setCreating(true);
     try {
-      const companyId = doc(collection(db, 'companies')).id;
-      const companyData: Company = {
-        id: companyId,
+      await api.post('/api/companies', {
         name: newCompany.name,
         cnpj: newCompany.cnpj,
         cep: newCompany.cep,
@@ -84,16 +75,13 @@ export default function AdminClientes() {
         complement: newCompany.complement,
         city: newCompany.city,
         uf: newCompany.uf.toUpperCase(),
-        ownerUserId: auth.currentUser?.uid,
-        allowedTrails: []
-      };
-      
-      await setDoc(doc(db, 'companies', companyId), companyData);
+        allowedTrails: [],
+      });
       setNewCompany({ name: '', cnpj: '', cep: '', address: '', number: '', complement: '', city: '', uf: '' });
       setIsModalOpen(false);
       fetchCompanies();
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'company');
+      console.error('Error creating company:', error);
     } finally {
       setCreating(false);
     }

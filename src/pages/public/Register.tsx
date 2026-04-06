@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { User as UserIcon, Mail, Lock, Building2, ShieldCheck, Eye } from 'lucide-react';
-import { auth, db } from '../../utils/firebase';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { auth } from '../../utils/firebase';
+import { signInWithEmailAndPassword } from 'firebase/auth';
 import { fetchAddressByCEP, formatCEP, formatCNPJ, isStrongPassword, isValidCNPJ, onlyDigits, validateCNPJExists } from '../../utils/validators';
 
 export default function Register() {
@@ -25,39 +24,7 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  const ensureOnboardingData = async (uid: string) => {
-    const userRef = doc(db, 'users', uid);
-    const userSnap = await getDoc(userRef);
-
-    if (userSnap.exists()) {
-      return { alreadyConfigured: true };
-    }
-
-    const companyId = `company-${uid}`;
-    await setDoc(doc(db, 'companies', companyId), {
-      id: companyId,
-      name: formData.companyName,
-      cnpj: formData.cnpj,
-      cep: formData.cep,
-      address: formData.address,
-      number: formData.number,
-      complement: formData.complement,
-      city: formData.city,
-      uf: formData.uf.toUpperCase(),
-      ownerUserId: uid,
-      allowedTrails: ['one', 'smart', 'pro'],
-    }, { merge: true });
-
-    await setDoc(userRef, {
-      id: uid,
-      name: formData.adminName,
-      email: formData.email,
-      role: 'admin',
-      companyId,
-    });
-
-    return { alreadyConfigured: false };
-  };
+  const ensureOnboardingData = async (_token: string) => ({ alreadyConfigured: false });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,44 +57,43 @@ export default function Register() {
     }
 
     setLoading(true);
-
     try {
-      // 1. Create user in Firebase Auth
-      const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
-      const firebaseUser = userCredential.user;
+      const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
 
-      await ensureOnboardingData(firebaseUser.uid);
+      const res = await fetch(`${BASE_URL}/api/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: formData.email,
+          password: formData.password,
+          name: formData.adminName,
+          companyName: formData.companyName,
+          cnpj: formData.cnpj,
+          cep: formData.cep,
+          address: formData.address,
+          number: formData.number,
+          complement: formData.complement,
+          city: formData.city,
+          uf: formData.uf.toUpperCase(),
+        }),
+      });
 
-      alert('Cadastro realizado com sucesso! Agora você pode fazer login.');
-      navigate('/login');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          setError('Este e-mail ou CNPJ já está cadastrado.');
+        } else {
+          setError(data.message || `Erro ao criar conta (${res.status})`);
+        }
+        return;
+      }
+
+      // Sign in to establish the Firebase session
+      await signInWithEmailAndPassword(auth, formData.email, formData.password);
+      navigate('/empresa');
     } catch (err: any) {
       console.error('Registration error:', err);
-      if (err.code === 'auth/email-already-in-use') {
-        try {
-          const existingCredential = await signInWithEmailAndPassword(auth, formData.email, formData.password);
-          const result = await ensureOnboardingData(existingCredential.user.uid);
-
-          if (result.alreadyConfigured) {
-            setError('Este e-mail ja esta cadastrado. Faca login ou recupere sua senha.');
-          } else {
-            alert('Conta existente encontrada. Cadastro complementar concluido com sucesso!');
-            navigate('/login');
-          }
-        } catch (signInErr: any) {
-          console.error('Registration recovery error:', signInErr);
-          if (signInErr.code === 'auth/invalid-credential' || signInErr.code === 'auth/wrong-password') {
-            setError('Este e-mail ja existe, mas a senha informada nao confere. Use Recuperar Senha no login.');
-          } else if (signInErr.code === 'permission-denied' || signInErr.code === 'firestore/permission-denied') {
-            setError('Permissao negada no Firestore. Verifique se as regras publicadas estao atualizadas.');
-          } else {
-            setError('Este e-mail ja esta em uso e nao foi possivel concluir o cadastro automaticamente.');
-          }
-        }
-      } else if (err.code === 'auth/weak-password') {
-        setError('A senha deve ter pelo menos 6 caracteres.');
-      } else {
-        setError('Ocorreu um erro ao realizar o cadastro.');
-      }
+      setError('Ocorreu um erro ao realizar o cadastro. Tente novamente.');
     } finally {
       setLoading(false);
     }
@@ -143,7 +109,7 @@ export default function Register() {
               <div className="w-8 h-8 bg-gradient-to-br from-faktory-blue to-faktory-yellow rounded flex items-center justify-center text-white font-bold">F</div>
               <span className="text-2xl font-semibold text-[#4a5568] tracking-tight">Faktory</span>
             </div>
-            <span className="text-[10px] text-faktory-yellow font-bold self-end -mt-1 mr-1">Flow ■</span>
+            <span className="text-[10px] text-faktory-yellow font-bold self-end -mt-1 mr-1">Play ▶</span>
           </div>
         </div>
       </div>

@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { User } from '../../@types';
-import { auth, db } from '../../utils/firebase';
+import { auth } from '../../utils/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { api } from '../../utils/api';
 
 interface AuthState {
   user: User | null;
@@ -29,13 +29,10 @@ export const useAuthStore = create<AuthState>()(
         const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
           if (firebaseUser) {
             const token = await firebaseUser.getIdToken();
-            const userDocRef = doc(db, 'users', firebaseUser.uid);
-            const userDoc = await getDoc(userDocRef);
-            
-            if (userDoc.exists()) {
-              const userData = userDoc.data() as User;
+            try {
+              const userData = await api.get<User>('/api/auth/me');
               set({ user: userData, token, isAuthReady: true });
-            } else {
+            } catch {
               set({ user: null, token: null, isAuthReady: true });
             }
           } else {

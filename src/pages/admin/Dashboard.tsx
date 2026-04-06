@@ -2,9 +2,7 @@ import { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, BarChart3, ChevronRight, Users, Building2, BookOpen } from 'lucide-react';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
 import { cn } from '../../utils/utils';
-import { db } from '../../utils/firebase';
-import { collection, getDocs } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
+import { api } from '../../utils/api';
 
 export default function AdminDashboard() {
   const { user } = useAuthStore();
@@ -18,19 +16,19 @@ export default function AdminDashboard() {
   useEffect(() => {
     async function fetchStats() {
       try {
-        const [companiesSnap, usersSnap, trailsSnap] = await Promise.all([
-          getDocs(collection(db, 'companies')),
-          getDocs(collection(db, 'users')),
-          getDocs(collection(db, 'trails'))
+        const [companies, users, trails] = await Promise.all([
+          api.get<any[]>('/api/companies'),
+          api.get<any[]>('/api/users'),
+          api.get<any[]>('/api/trails'),
         ]);
 
         setStats({
-          companies: companiesSnap.size,
-          users: usersSnap.size,
-          trails: trailsSnap.size
+          companies: companies.length,
+          users: users.length,
+          trails: trails.length,
         });
       } catch (error) {
-        handleFirestoreError(error, OperationType.LIST, 'stats');
+        console.error('Error fetching stats:', error);
       } finally {
         setLoading(false);
       }

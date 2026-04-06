@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
 import { LogOut, User as UserIcon } from 'lucide-react';
-import { db } from '../../utils/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { api } from '../../utils/api';
 
 export default function LayoutAluno() {
   const { logout, user } = useAuthStore();
@@ -14,10 +13,8 @@ export default function LayoutAluno() {
     async function fetchCompany() {
       if (user?.companyId) {
         try {
-          const companyDoc = await getDoc(doc(db, 'companies', user.companyId));
-          if (companyDoc.exists()) {
-            setCompanyName(companyDoc.data().name);
-          }
+          const company = await api.get<{ name: string }>(`/api/companies/${user.companyId}`);
+          setCompanyName(company.name);
         } catch (error) {
           console.error('Error fetching company:', error);
           setCompanyName('Empresa');
@@ -42,7 +39,7 @@ export default function LayoutAluno() {
               <div className="w-6 h-6 bg-gradient-to-br from-faktory-blue to-faktory-yellow rounded flex items-center justify-center text-white font-bold text-xs">F</div>
               <span className="text-lg font-bold text-[#4a5568]">Faktory</span>
             </div>
-            <span className="text-[8px] text-faktory-yellow font-bold self-end -mt-0.5">Flow ■</span>
+            <span className="text-[8px] text-faktory-yellow font-bold self-end -mt-0.5">Play ▶</span>
           </div>
         </Link>
         

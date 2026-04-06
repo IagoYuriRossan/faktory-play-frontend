@@ -6,6 +6,7 @@ import { useAuthStore } from '../hooks/store/useAuthStore';
 import Home from '../pages/public/Home';
 import Login from '../pages/public/Login';
 import Register from '../pages/public/Register';
+import CadastroUsuario from '../pages/public/CadastroUsuario';
 
 // Admin Pages
 import AdminDashboard from '../pages/admin/Dashboard';
@@ -18,6 +19,11 @@ import AdminRelatorios from '../pages/admin/Relatorios';
 import AdminConfiguracoes from '../pages/admin/Configuracoes';
 import PlaceholderPage from '../pages/admin/Placeholder';
 
+// Empresa (company_admin) Pages
+import EmpresaDashboard from '../pages/empresa/Dashboard';
+import EmpresaProjetos from '../pages/empresa/Projetos';
+import EmpresaMembros from '../pages/empresa/Membros';
+
 // Student Pages
 import AlunoDashboard from '../pages/aluno/Dashboard';
 import AlunoAulaPlayer from '../pages/aluno/AulaPlayer';
@@ -25,9 +31,12 @@ import AlunoAulaPlayer from '../pages/aluno/AulaPlayer';
 // Layouts
 import LayoutAdmin from '../components/layouts/LayoutAdmin';
 import LayoutAluno from '../components/layouts/LayoutAluno';
+import LayoutEmpresa from '../components/layouts/LayoutEmpresa';
 import LayoutPublic from '../components/layouts/LayoutPublic';
 
-const ProtectedRoute = ({ children, role }: { children: React.ReactNode, role?: 'admin' | 'student' }) => {
+type AllowedRole = 'superadmin' | 'company_admin' | 'student';
+
+const ProtectedRoute = ({ children, role }: { children: React.ReactNode, role?: AllowedRole }) => {
   const { user, isAuthReady } = useAuthStore();
 
   if (!isAuthReady) {
@@ -43,7 +52,9 @@ const ProtectedRoute = ({ children, role }: { children: React.ReactNode, role?: 
   }
 
   if (role && user.role !== role) {
-    return <Navigate to={user.role === 'admin' ? '/admin' : '/app'} replace />;
+    if (user.role === 'superadmin') return <Navigate to="/admin" replace />;
+    if (user.role === 'company_admin') return <Navigate to="/empresa" replace />;
+    return <Navigate to="/app" replace />;
   }
 
   return <>{children}</>;
@@ -57,13 +68,14 @@ export default function AppRoutes() {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/cadastro-usuario" element={<CadastroUsuario />} />
       </Route>
 
       {/* Admin Routes */}
       <Route
         path="/admin"
         element={
-          <ProtectedRoute role="admin">
+          <ProtectedRoute role="superadmin">
             <LayoutAdmin />
           </ProtectedRoute>
         }
@@ -84,6 +96,20 @@ export default function AppRoutes() {
         <Route path="trilhas/:id" element={<AdminTrilhaBuilder />} />
         <Route path="relatorios" element={<AdminRelatorios />} />
         <Route path="configuracoes" element={<AdminConfiguracoes />} />
+      </Route>
+
+      {/* Empresa (company_admin) Routes */}
+      <Route
+        path="/empresa"
+        element={
+          <ProtectedRoute role="company_admin">
+            <LayoutEmpresa />
+          </ProtectedRoute>
+        }
+      >
+        <Route index element={<EmpresaDashboard />} />
+        <Route path="projetos" element={<EmpresaProjetos />} />
+        <Route path="membros" element={<EmpresaMembros />} />
       </Route>
 
       {/* Student Routes */}

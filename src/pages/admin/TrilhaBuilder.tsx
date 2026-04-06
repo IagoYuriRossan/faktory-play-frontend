@@ -7,9 +7,7 @@ import {
   Eye, Search, Bell, User as UserIcon, Minus, Maximize2,
   RefreshCw, MousePointer2, Settings
 } from 'lucide-react';
-import { db } from '../../utils/firebase';
-import { doc, getDoc, setDoc, collection } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
+import { api } from '../../utils/api';
 import { Trail, Module, Lesson } from '../../@types';
 import { cn } from '../../utils/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -17,7 +15,7 @@ import { motion, AnimatePresence } from 'motion/react';
 export default function AdminTrilhaBuilder() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [trailId] = useState(() => id || doc(collection(db, 'trails')).id);
+  const [trailId] = useState(() => id || `trail-${Date.now()}`);
   const [loading, setLoading] = useState(!!id);
   const [saving, setSaving] = useState(false);
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
@@ -38,20 +36,19 @@ export default function AdminTrilhaBuilder() {
 
     const timeoutId = setTimeout(async () => {
       try {
-        const finalData: Trail = {
-          id: trailId,
-          ...trailData
-        };
-        await setDoc(doc(db, 'trails', trailId), finalData);
-        setLastSaved(new Date());
-        setIsDirty(false);
-        if (!id) {
+        const finalData = { id: trailId, ...trailData };
+        if (id) {
+          await api.put(`/api/trails/${trailId}`, finalData);
+        } else {
+          await api.post('/api/trails', finalData);
           navigate(`/admin/trilhas/${trailId}`, { replace: true });
         }
+        setLastSaved(new Date());
+        setIsDirty(false);
       } catch (error) {
-        console.error("Auto-save failed:", error);
+        console.error('Auto-save failed:', error);
       }
-    }, 2000); // Save after 2 seconds of inactivity
+    }, 2000);
 
     return () => clearTimeout(timeoutId);
   }, [trailData, isDirty, id, trailId, navigate]);
@@ -60,23 +57,20 @@ export default function AdminTrilhaBuilder() {
     async function fetchTrail() {
       if (!id) return;
       try {
-        const trailDoc = await getDoc(doc(db, 'trails', id));
-        if (trailDoc.exists()) {
-          const data = trailDoc.data() as Trail;
-          setTrailData({
-            title: data.title,
-            description: data.description,
-            modules: data.modules
-          });
-          if (data.modules.length > 0) {
-            setActiveModuleId(data.modules[0].id);
-            if (data.modules[0].lessons.length > 0) {
-              setActiveLessonId(data.modules[0].lessons[0].id);
-            }
+        const data = await api.get<Trail>(`/api/trails/${id}`);
+        setTrailData({
+          title: data.title,
+          description: data.description,
+          modules: data.modules,
+        });
+        if (data.modules.length > 0) {
+          setActiveModuleId(data.modules[0].id);
+          if (data.modules[0].lessons.length > 0) {
+            setActiveLessonId(data.modules[0].lessons[0].id);
           }
         }
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `trail-${id}`);
+        console.error('Error fetching trail:', error);
       } finally {
         setLoading(false);
       }
@@ -87,19 +81,17 @@ export default function AdminTrilhaBuilder() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const finalData: Trail = {
-        id: trailId,
-        ...trailData
-      };
-      
-      await setDoc(doc(db, 'trails', trailId), finalData);
-      setLastSaved(new Date());
-      setIsDirty(false);
-      if (!id) {
+      const finalData: Trail = { id: trailId, ...trailData };
+      if (id) {
+        await api.put(`/api/trails/${trailId}`, finalData);
+      } else {
+        await api.post('/api/trails', finalData);
         navigate(`/admin/trilhas/${trailId}`, { replace: true });
       }
+      setLastSaved(new Date());
+      setIsDirty(false);
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'trail');
+      console.error('Error saving trail:', error);
     } finally {
       setSaving(false);
     }

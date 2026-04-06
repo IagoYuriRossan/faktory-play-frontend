@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { db } from '../../utils/firebase';
-import { doc, getDoc, setDoc, collection, query, where, getDocs, updateDoc } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
+import { api } from '../../utils/api';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
 import { Trail, Lesson, Enrollment } from '../../@types';
 import { 
@@ -39,17 +37,12 @@ export default function AlunoAulaPlayer() {
 
       try {
         // 1. Fetch trail
-        const trailDoc = await getDoc(doc(db, 'trails', id));
         let trailData: Trail | null = null;
-
-        if (trailDoc.exists()) {
-          trailData = { id: trailDoc.id, ...trailDoc.data() } as Trail;
-        } else {
-          // Fallback to mock data for Faktory One
+        try {
+          trailData = await api.get<Trail>(`/api/trails/${id}`);
+        } catch {
           const mockTrail = MOCK_TRAILS.find(t => t.id === id);
-          if (mockTrail) {
-            trailData = mockTrail;
-          }
+          if (mockTrail) trailData = mockTrail;
         }
 
         if (trailData) {
@@ -58,33 +51,34 @@ export default function AlunoAulaPlayer() {
           setExpandedModules([trailData.modules[0].id]);
         }
 
-        // 2. Fetch or create enrollment
-        const enrollmentsQuery = query(
-          collection(db, 'enrollments'), 
-          where('userId', '==', user.id),
-          where('trailId', '==', id)
-        );
-        const enrollmentsSnap = await getDocs(enrollmentsQuery);
-        
-        if (!enrollmentsSnap.empty) {
-          setEnrollment({ id: enrollmentsSnap.docs[0].id, ...enrollmentsSnap.docs[0].data() } as Enrollment);
-        } else {
-          // Create new enrollment
-          const newEnrollmentRef = doc(collection(db, 'enrollments'));
-          const newEnrollment: Enrollment = {
-            id: newEnrollmentRef.id,
+        // 2. Fetch lesson progress
+        try {
+          const progress = await api.get<any[]>(`/api/users/${user.id}/progress`);
+          const completedLessons = progress.filter(p => p.completed).map(p => p.lessonId);
+          const totalLessons = trailData?.modules.reduce((acc, m) => acc + m.lessons.length, 0) || 1;
+          const progressPct = Math.round((completedLessons.length / totalLessons) * 100);
+          setEnrollment({
+            id: `${user.id}-${id}`,
+            userId: user.id,
+            trailId: id,
+            progress: progressPct,
+            completedLessons,
+            status: progressPct >= 100 ? 'completed' : progressPct > 0 ? 'in-progress' : 'not-started',
+            lastAccess: new Date().toISOString(),
+          });
+        } catch {
+          setEnrollment({
+            id: `${user.id}-${id}`,
             userId: user.id,
             trailId: id,
             progress: 0,
             completedLessons: [],
-            status: 'in-progress',
-            lastAccess: new Date().toISOString()
-          };
-          await setDoc(newEnrollmentRef, newEnrollment);
-          setEnrollment(newEnrollment);
+            status: 'not-started',
+            lastAccess: new Date().toISOString(),
+          });
         }
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `trail-${id}`);
+        console.error('Error fetching aula data:', error);
       } finally {
         setLoading(false);
       }
@@ -118,33 +112,30 @@ export default function AlunoAulaPlayer() {
   };
 
   const handleQuizSubmit = async () => {
-    if (quizAnswer !== null && currentLesson && enrollment && trail) {
+    if (quizAnswer !== null && currentLesson && enrollment && trail && user) {
       const isCorrect = quizAnswer === currentLesson.quiz?.correctIndex;
       setShowQuizResult(true);
 
       if (isCorrect) {
         const isAlreadyCompleted = enrollment.completedLessons.includes(currentLesson.id);
-        const newCompletedLessons = isAlreadyCompleted 
-          ? enrollment.completedLessons 
+        const newCompletedLessons = isAlreadyCompleted
+          ? enrollment.completedLessons
           : [...enrollment.completedLessons, currentLesson.id];
-        
+
         const totalLessons = trail.modules.reduce((acc, m) => acc + m.lessons.length, 0);
         const newProgress = Math.round((newCompletedLessons.length / totalLessons) * 100);
-        
+
         try {
-          await updateDoc(doc(db, 'enrollments', enrollment.id), {
+          await api.put(`/api/users/${user.id}/progress/${currentLesson.id}`, {
+            completed: true,
+          });
+          setEnrollment(prev => prev ? {
+            ...prev,
             progress: newProgress,
             completedLessons: newCompletedLessons,
-            lastAccess: new Date().toISOString(),
-            status: newProgress >= 100 ? 'completed' : 'in-progress'
-          });
-          setEnrollment(prev => prev ? { 
-            ...prev, 
-            progress: newProgress,
-            completedLessons: newCompletedLessons
           } : null);
         } catch (error) {
-          handleFirestoreError(error, OperationType.UPDATE, `enrollment-${enrollment.id}`);
+          console.error('Error saving progress:', error);
         }
       }
     }

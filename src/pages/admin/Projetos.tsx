@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Search, Trash2, Loader2, Layers, User, BookOpen } from 'lucide-react';
-import { db } from '../../utils/firebase';
-import { collection, getDocs, addDoc, deleteDoc, doc, query, where, serverTimestamp } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
+import { api } from '../../utils/api';
 import { Project, User as UserType, Trail } from '../../@types';
 import { cn } from '../../utils/utils';
 
@@ -21,17 +19,17 @@ export default function AdminProjetos() {
   useEffect(() => {
     async function fetchData() {
       try {
-        const [projectsSnap, usersSnap, trailsSnap] = await Promise.all([
-          getDocs(collection(db, 'projects')),
-          getDocs(query(collection(db, 'users'), where('role', '==', 'student'))),
-          getDocs(collection(db, 'trails'))
+        const [projectsData, usersData, trailsData] = await Promise.all([
+          api.get<Project[]>('/api/projects'),
+          api.get<UserType[]>('/api/users'),
+          api.get<Trail[]>('/api/trails'),
         ]);
 
-        setProjects(projectsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Project)));
-        setUsers(usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as UserType)));
-        setTrails(trailsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Trail)));
+        setProjects(projectsData);
+        setUsers(usersData.filter(u => u.role === 'student'));
+        setTrails(trailsData);
       } catch (error) {
-        handleFirestoreError(error, OperationType.LIST, 'projects');
+        console.error('Error fetching projects data:', error);
       } finally {
         setLoading(false);
       }
@@ -46,20 +44,24 @@ export default function AdminProjetos() {
 
     setSaving(true);
     try {
-      const newProjectData = {
+      const created = await api.post<{ id: string }>('/api/projects', {
         clientId: selectedUser,
         trailId: selectedTrail,
         status: 'active',
-        createdAt: serverTimestamp()
+      });
+      const newProject: Project = {
+        id: created.id,
+        clientId: selectedUser,
+        trailId: selectedTrail,
+        status: 'active',
+        createdAt: new Date(),
       };
-
-      const docRef = await addDoc(collection(db, 'projects'), newProjectData);
-      setProjects(prev => [...prev, { id: docRef.id, ...newProjectData, createdAt: new Date() } as any]);
+      setProjects(prev => [...prev, newProject]);
       setShowModal(false);
       setSelectedUser('');
       setSelectedTrail('');
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'project');
+      console.error('Error creating project:', error);
     } finally {
       setSaving(false);
     }
@@ -69,10 +71,10 @@ export default function AdminProjetos() {
     if (!confirm('Tem certeza que deseja remover este projeto? O aluno perderá acesso ao curso.')) return;
 
     try {
-      await deleteDoc(doc(db, 'projects', id));
+      await api.delete(`/api/projects/${id}`);
       setProjects(prev => prev.filter(p => p.id !== id));
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'project');
+      console.error('Error deleting project:', error);
     }
   };
 

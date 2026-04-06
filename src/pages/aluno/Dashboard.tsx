@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
-import { db } from '../../utils/firebase';
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
-import { Trail, Enrollment, Company } from '../../@types';
+import { api } from '../../utils/api';
+import { Trail, Enrollment } from '../../@types';
 import { BookOpen, Clock, ChevronRight, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '../../utils/utils';
@@ -19,28 +17,20 @@ export default function AlunoDashboard() {
   useEffect(() => {
     async function fetchData() {
       if (!user) return;
-      
+
       try {
-        // 1. Fetch projects for this user
-        const projectsQuery = query(collection(db, 'projects'), where('clientId', '==', user.id), where('status', '==', 'active'));
-        const projectsSnap = await getDocs(projectsQuery);
-        const projectTrailIds = projectsSnap.docs.map(d => d.data().trailId);
+        const [projects, allTrails, enrollmentsData] = await Promise.all([
+          api.get<any[]>('/api/projects'),
+          api.get<Trail[]>('/api/trails'),
+          api.get<Enrollment[]>(`/api/users/${user.id}/progress`),
+        ]);
 
-        // 2. Fetch trails
-        const trailsSnap = await getDocs(collection(db, 'trails'));
-        const dbTrails = trailsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Trail));
-        
-        // Filter trails by project assignment
-        const filteredTrails = dbTrails.filter(t => projectTrailIds.includes(t.id));
-        setTrails(filteredTrails);
-
-        // 3. Fetch user enrollments
-        const enrollmentsQuery = query(collection(db, 'enrollments'), where('userId', '==', user.id));
-        const enrollmentsSnap = await getDocs(enrollmentsQuery);
-        setEnrollments(enrollmentsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Enrollment)));
-
+        const projectTrailIds = projects.map((p: any) => p.trailId);
+        const dbTrails = allTrails.filter(t => projectTrailIds.includes(t.id));
+        setTrails(dbTrails);
+        setEnrollments(enrollmentsData);
       } catch (error) {
-        handleFirestoreError(error, OperationType.LIST, 'dashboard-data');
+        console.error('Error fetching dashboard data:', error);
       } finally {
         setLoading(false);
       }

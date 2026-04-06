@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, Search, MoreVertical, BookOpen, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { db } from '../../utils/firebase';
-import { collection, getDocs } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
+import { api } from '../../utils/api';
 import { Trail } from '../../@types';
 
 export default function AdminTrilhas() {
@@ -14,14 +12,10 @@ export default function AdminTrilhas() {
   useEffect(() => {
     async function fetchTrails() {
       try {
-        const querySnapshot = await getDocs(collection(db, 'trails'));
-        const trailsData = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        } as Trail));
+        const trailsData = await api.get<Trail[]>('/api/trails');
         setTrails(trailsData);
       } catch (error) {
-        handleFirestoreError(error, OperationType.LIST, 'trails');
+        console.error('Error fetching trails:', error);
       } finally {
         setLoading(false);
       }

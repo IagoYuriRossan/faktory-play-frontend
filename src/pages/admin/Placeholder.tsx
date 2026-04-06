@@ -8,7 +8,7 @@ export default function PlaceholderPage({ title }: { title: string }) {
       </div>
       <h1 className="text-2xl font-bold text-slate-800 mb-2">{title}</h1>
       <p className="text-slate-500 max-w-md">
-        Esta página está em desenvolvimento e estará disponível em breve como parte do ecossistema Faktory Flow.
+        Esta página está em desenvolvimento e estará disponível em breve como parte do ecossistema Faktory Play.
       </p>
     </div>
   );

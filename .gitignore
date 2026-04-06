@@ -11,7 +11,7 @@ build/
 .env
 .env.*
 !.env.example
-
+.ev.example
 # Firebase config files (contain credentials, use .env.example as template)
 firebase-applet-config.json
 

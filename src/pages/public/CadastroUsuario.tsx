@@ -1,0 +1,315 @@
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { User as UserIcon, Mail, Lock, Eye, EyeOff, CheckCircle, Loader2 } from 'lucide-react';
+import { auth } from '../../utils/firebase';
+import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { useAuthStore } from '../../hooks/store/useAuthStore';
+import { api } from '../../utils/api';
+import { User } from '../../@types';
+import { isStrongPassword } from '../../utils/validators';
+
+interface InviteInfo {
+  companyId: string;
+  companyName: string;
+  invitedEmail?: string;
+  invitedName?: string;
+  expiresAt: string;
+}
+
+export default function CadastroUsuario() {
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get('token') || '';
+  const navigate = useNavigate();
+
+  const [invite, setInvite] = useState<InviteInfo | null>(null);
+  const [inviteError, setInviteError] = useState('');
+  const [validating, setValidating] = useState(true);
+
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  const { login } = useAuthStore();
+  const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
+
+  useEffect(() => {
+    if (!token) {
+      setInviteError('Link inválido — token de convite ausente.');
+      setValidating(false);
+      return;
+    }
+
+    const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
+    fetch(`${BASE_URL}/api/invites/${token}`)
+      .then(async res => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.message || (res.status === 404 ? 'Convite não encontrado ou já utilizado.' : `Erro ${res.status}`));
+        }
+        return res.json() as Promise<InviteInfo>;
+      })
+      .then(data => {
+        if (new Date(data.expiresAt) < new Date()) {
+          setInviteError('Este convite expirou. Solicite um novo ao administrador.');
+          return;
+        }
+        setInvite(data);
+        if (data.invitedEmail) setEmail(data.invitedEmail);
+        if (data.invitedName) setName(data.invitedName);
+      })
+      .catch(err => setInviteError(err.message || 'Erro ao validar convite.'))
+      .finally(() => setValidating(false));
+  }, [token]);
+
+  const handleGoogleLogin = async () => {
+    setError('');
+    setGoogleLoading(true);
+    try {
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const idToken = await result.user.getIdToken();
+
+      // Aceitar o convite vinculando a conta Google à empresa
+      const acceptRes = await fetch(`${BASE_URL}/api/invites/${token}/accept`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+
+      if (!acceptRes.ok) {
+        const data = await acceptRes.json().catch(() => ({}));
+        setError(data.message || `Erro ao aceitar convite (${acceptRes.status})`);
+        return;
+      }
+
+      // Buscar perfil completo e salvar na store
+      const userData = await api.get<User>('/api/auth/me');
+      login(userData, idToken);
+      navigate('/app');
+    } catch (err: any) {
+      if (err.code === 'auth/popup-closed-by-user') return;
+      if (err.code === 'auth/unauthorized-domain') {
+        setError('Domínio não autorizado no Firebase. Adicione 127.0.0.1 em Authentication > Authorized domains.');
+      } else {
+        setError(err.message || 'Erro ao entrar com Google.');
+      }
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    if (password !== confirmPassword) {
+      setError('As senhas não coincidem.');
+      return;
+    }
+
+    if (!isStrongPassword(password)) {
+      setError('Senha fraca. Use no mínimo 8 caracteres com maiúscula, minúscula, número e símbolo.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
+
+      const res = await fetch(`${BASE_URL}/api/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, name, inviteToken: token }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          setError('Este e-mail já está cadastrado.');
+        } else {
+          setError(data.message || `Erro ao criar conta (${res.status})`);
+        }
+        return;
+      }
+
+      // Establish Firebase session
+      await signInWithEmailAndPassword(auth, email, password);
+      setSuccess(true);
+    } catch (err: any) {
+      setError(err.message || 'Erro ao criar conta. Tente novamente.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (validating) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="animate-spin text-faktory-blue" size={36} />
+      </div>
+    );
+  }
+
+  if (inviteError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-10 text-center max-w-sm w-full space-y-3">
+          <p className="text-red-500 font-medium">{inviteError}</p>
+          <p className="text-sm text-slate-400">Entre em contato com o administrador da sua empresa.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (success) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-10 text-center max-w-sm w-full space-y-4">
+          <CheckCircle className="mx-auto text-green-500" size={48} />
+          <h2 className="text-xl font-bold text-slate-800">Cadastro realizado!</h2>
+          <p className="text-sm text-slate-500">
+            Sua conta foi criada com sucesso em <span className="font-semibold">{invite?.companyName}</span>.
+          </p>
+          <button
+            onClick={() => navigate('/app')}
+            className="block w-full bg-faktory-blue text-white py-2.5 rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-colors"
+          >
+            Acessar plataforma
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 w-full max-w-sm space-y-6">
+        <div className="text-center">
+          <p className="text-xs font-bold text-slate-400 uppercase mb-1">{invite?.companyName}</p>
+          <h1 className="text-2xl font-bold text-slate-800">Criar sua conta</h1>
+          <p className="text-sm text-slate-500 mt-1">Preencha os dados para acessar a plataforma.</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1">Nome completo</label>
+            <div className="relative">
+              <UserIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="João da Silva"
+                required
+                className="w-full pl-9 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-faktory-blue focus:border-faktory-blue outline-none"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1">E-mail</label>
+            <div className="relative">
+              <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="joao@empresa.com.br"
+                required
+                readOnly={!!invite?.invitedEmail}
+                className="w-full pl-9 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-faktory-blue focus:border-faktory-blue outline-none read-only:bg-slate-50 read-only:text-slate-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1">Senha</label>
+            <div className="relative">
+              <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Mínimo 8 caracteres"
+                required
+                className="w-full pl-9 pr-10 py-2.5 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-faktory-blue focus:border-faktory-blue outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1">Confirmar senha</label>
+            <div className="relative">
+              <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                placeholder="Repita a senha"
+                required
+                className="w-full pl-9 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-faktory-blue focus:border-faktory-blue outline-none"
+              />
+            </div>
+          </div>
+
+          {error && (
+            <p className="text-xs text-red-500 bg-red-50 px-3 py-2 rounded-lg">{error}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading || googleLoading}
+            className="w-full bg-faktory-blue text-white py-2.5 rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+          >
+            {loading && <Loader2 size={16} className="animate-spin" />}
+            {loading ? 'Criando conta...' : 'Criar conta'}
+          </button>
+
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-slate-200" />
+            <span className="text-xs text-slate-400">ou</span>
+            <div className="flex-1 h-px bg-slate-200" />
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGoogleLogin}
+            disabled={loading || googleLoading}
+            className="w-full border border-slate-200 bg-white text-slate-700 py-2.5 rounded-lg font-bold text-sm hover:bg-slate-50 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+          >
+            {googleLoading ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z" fill="#FFC107"/>
+                <path d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z" fill="#FF3D00"/>
+                <path d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238C29.211 35.091 26.715 36 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z" fill="#4CAF50"/>
+                <path d="M43.611 20.083H42V20H24v8h11.303c-.792 2.237-2.231 4.166-4.087 5.571l6.19 5.238C42.021 35.851 44 30.138 44 24c0-1.341-.138-2.65-.389-3.917z" fill="#1976D2"/>
+              </svg>
+            )}
+            {googleLoading ? 'Aguarde...' : 'Entrar com Google'}
+          </button>
+        </form>
+
+        <p className="text-center text-xs text-slate-400">
+          Já tem conta?{' '}
+          <Link to="/login" className="text-faktory-blue font-bold hover:underline">
+            Entrar
+          </Link>
+        </p>
+      </div>
+    </div>
+  );
+}

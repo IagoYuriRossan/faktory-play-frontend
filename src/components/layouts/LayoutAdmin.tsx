@@ -88,7 +88,7 @@ export default function LayoutAdmin() {
               <div className="w-6 h-6 bg-gradient-to-br from-faktory-blue to-faktory-yellow rounded flex items-center justify-center text-white font-bold text-xs">F</div>
               <span className="text-lg font-bold text-[#4a5568]">Faktory</span>
             </div>
-            <span className="text-[8px] text-faktory-yellow font-bold self-end -mt-0.5">Flow ■</span>
+            <span className="text-[8px] text-faktory-yellow font-bold self-end -mt-0.5">Play ▶</span>
           </div>
           <button className="text-gray-300 hover:text-gray-500">
             <ChevronLeft size={16} />
@@ -169,7 +169,7 @@ export default function LayoutAdmin() {
           <div className="flex items-center justify-between text-[8px] text-gray-400 font-bold uppercase">
             <div className="flex items-center gap-1">
               <div className="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
-              Faktory Flow <span className="text-gray-300">v1.0.0</span>
+              Faktory Play <span className="text-gray-300">v1.0.0</span>
             </div>
           </div>
         </div>

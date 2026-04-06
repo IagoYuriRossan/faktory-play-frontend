@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Search, Download, Filter, Loader2 } from 'lucide-react';
-import { db } from '../../utils/firebase';
-import { collection, getDocs, query, orderBy } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
+import { api } from '../../utils/api';
 import { Enrollment, User, Company, Trail } from '../../@types';
 
 interface ReportItem {
@@ -26,24 +24,22 @@ export default function AdminRelatorios() {
   useEffect(() => {
     async function fetchReports() {
       try {
-        // Fetch all necessary data
-        const [enrollmentsSnap, usersSnap, companiesSnap, trailsSnap] = await Promise.all([
-          getDocs(collection(db, 'enrollments')),
-          getDocs(collection(db, 'users')),
-          getDocs(collection(db, 'companies')),
-          getDocs(collection(db, 'trails'))
+        const [enrollments, users, companies, trails] = await Promise.all([
+          api.get<any[]>('/api/reports'),
+          api.get<User[]>('/api/users'),
+          api.get<Company[]>('/api/companies'),
+          api.get<Trail[]>('/api/trails'),
         ]);
 
-        const usersMap = new Map(usersSnap.docs.map(d => [d.id, d.data() as User]));
-        const companiesMap = new Map(companiesSnap.docs.map(d => [d.id, d.data() as Company]));
-        const trailsMap = new Map(trailsSnap.docs.map(d => [d.id, d.data() as Trail]));
-        
-        setCompanies(companiesSnap.docs.map(d => ({ id: d.id, ...d.data() } as Company)));
+        const usersMap = new Map(users.map(u => [u.id, u]));
+        const companiesMap = new Map(companies.map(c => [c.id, c]));
+        const trailsMap = new Map(trails.map(t => [t.id, t]));
 
-        const combinedReports: ReportItem[] = enrollmentsSnap.docs.map(doc => {
-          const data = doc.data() as Enrollment;
+        setCompanies(companies);
+
+        const combinedReports: ReportItem[] = enrollments.map((data: any) => {
           const user = usersMap.get(data.userId);
-          const company = user ? companiesMap.get(user.companyId) : null;
+          const company = user?.companyId ? companiesMap.get(user.companyId) : null;
           const trail = trailsMap.get(data.trailId);
 
           let status = 'Não Iniciado';
@@ -51,19 +47,19 @@ export default function AdminRelatorios() {
           else if (data.progress > 0) status = 'Em Andamento';
 
           return {
-            id: doc.id,
+            id: data.id,
             company: company?.name || 'N/A',
             user: user?.name || 'N/A',
             trail: trail?.title || 'N/A',
             progress: data.progress,
-            status: status,
-            lastAccess: data.lastAccess ? new Date(data.lastAccess).toLocaleDateString('pt-BR') : '-'
+            status,
+            lastAccess: data.lastAccess ? new Date(data.lastAccess).toLocaleDateString('pt-BR') : '-',
           };
         });
 
         setReports(combinedReports);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, 'reports');
+        console.error('Error fetching reports:', error);
       } finally {
         setLoading(false);
       }

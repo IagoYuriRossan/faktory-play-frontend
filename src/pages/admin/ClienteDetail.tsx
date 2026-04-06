@@ -1,10 +1,8 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { db } from '../../utils/firebase';
-import { doc, getDoc, updateDoc, collection, query, where, getDocs } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from '../../utils/firestore-errors';
+import { api } from '../../utils/api';
 import { Company, User, Trail } from '../../@types';
-import { ArrowLeft, Building2, Users, BookOpen, Settings, Plus, Mail, Trash2, Edit2, Loader2, Check } from 'lucide-react';
+import { ArrowLeft, Building2, Users, BookOpen, Link2, Plus, Mail, Trash2, Edit2, Loader2, Check, Copy, X } from 'lucide-react';
 import { cn } from '../../utils/utils';
 
 export default function AdminClienteDetail() {
@@ -16,28 +14,62 @@ export default function AdminClienteDetail() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<'info' | 'users' | 'trails'>('users');
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteName, setInviteName] = useState('');
+  const [inviting, setInviting] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [inviteModalError, setInviteModalError] = useState('');
+
+  const handleOpenInviteModal = () => {
+    setInviteEmail('');
+    setInviteName('');
+    setInviteUrl('');
+    setCopied(false);
+    setInviteModalError('');
+    setShowInviteModal(true);
+  };
+
+  const handleGenerateInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!id) return;
+    setInviting(true);
+    setInviteModalError('');
+    try {
+      const data = await api.post<{ inviteToken: string; expiresAt: string; inviteUrl: string }>(
+        `/api/companies/${id}/invite`,
+        { email: inviteEmail, name: inviteName || undefined }
+      );
+      setInviteUrl(data.inviteUrl);
+    } catch (err: any) {
+      setInviteModalError(err.message || 'Erro ao gerar convite.');
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(inviteUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
 
   useEffect(() => {
     async function fetchData() {
       if (!id) return;
       try {
-        // 1. Fetch company
-        const companyDoc = await getDoc(doc(db, 'companies', id));
-        if (companyDoc.exists()) {
-          setCompany({ id: companyDoc.id, ...companyDoc.data() } as Company);
-        }
+        const [companyData, allUsersData, trailsData] = await Promise.all([
+          api.get<Company>(`/api/companies/${id}`),
+          api.get<User[]>('/api/users'),
+          api.get<Trail[]>('/api/trails'),
+        ]);
 
-        // 2. Fetch company users
-        const usersQuery = query(collection(db, 'users'), where('companyId', '==', id));
-        const usersSnap = await getDocs(usersQuery);
-        setUsers(usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as User)));
-
-        // 3. Fetch all trails
-        const trailsSnap = await getDocs(collection(db, 'trails'));
-        setAllTrails(trailsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Trail)));
-
+        setCompany(companyData);
+        setUsers(allUsersData.filter(u => u.companyId === id));
+        setAllTrails(trailsData);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `company-${id}`);
+        console.error('Error fetching company detail:', error);
       } finally {
         setLoading(false);
       }
@@ -59,12 +91,9 @@ export default function AdminClienteDetail() {
     if (!company || !id) return;
     setSaving(true);
     try {
-      await updateDoc(doc(db, 'companies', id), {
-        allowedTrails: company.allowedTrails
-      });
-      // Success feedback could be added here
+      await api.put(`/api/companies/${id}`, { allowedTrails: company.allowedTrails });
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `company-${id}`);
+      console.error('Error saving trails:', error);
     } finally {
       setSaving(false);
     }
@@ -142,9 +171,12 @@ export default function AdminClienteDetail() {
           <div className="space-y-6">
             <div className="flex justify-between items-center">
               <h3 className="font-bold text-slate-800 text-lg">Funcionários Cadastrados</h3>
-              <button className="bg-faktory-blue text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 hover:bg-[#2c6a9a] transition-colors shadow-lg shadow-blue-100">
-                <Plus size={18} />
-                Novo Funcionário
+              <button
+                onClick={handleOpenInviteModal}
+                className="bg-faktory-blue text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 hover:bg-[#2c6a9a] transition-colors shadow-lg shadow-blue-100"
+              >
+                <Link2 size={18} />
+                Gerar Link de Cadastro
               </button>
             </div>
 
@@ -229,6 +261,81 @@ export default function AdminClienteDetail() {
           </div>
         )}
       </div>
+      {showInviteModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg">
+            <div className="flex items-center justify-between p-5 border-b border-slate-100">
+              <div>
+                <h2 className="text-base font-bold text-slate-800">Convidar Funcionário</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Gere um link de cadastro vinculado a esta empresa.</p>
+              </div>
+              <button onClick={() => setShowInviteModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+
+            {!inviteUrl ? (
+              <form onSubmit={handleGenerateInvite} className="p-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">E-mail do funcionário</label>
+                  <input
+                    type="email"
+                    value={inviteEmail}
+                    onChange={e => setInviteEmail(e.target.value)}
+                    placeholder="joao@empresa.com.br"
+                    required
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-faktory-blue focus:border-faktory-blue outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">Nome (opcional)</label>
+                  <input
+                    type="text"
+                    value={inviteName}
+                    onChange={e => setInviteName(e.target.value)}
+                    placeholder="João da Silva"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-faktory-blue focus:border-faktory-blue outline-none"
+                  />
+                </div>
+                {inviteModalError && (
+                  <p className="text-xs text-red-500 bg-red-50 px-3 py-2 rounded-lg">{inviteModalError}</p>
+                )}
+                <button
+                  type="submit"
+                  disabled={inviting}
+                  className="w-full bg-faktory-blue text-white py-2.5 rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+                >
+                  {inviting ? <Loader2 size={16} className="animate-spin" /> : <Mail size={16} />}
+                  {inviting ? 'Gerando...' : 'Gerar link de convite'}
+                </button>
+              </form>
+            ) : (
+              <div className="p-5 space-y-4">
+                <p className="text-sm text-slate-600">Link gerado com sucesso! Copie e envie ao funcionário.</p>
+                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5">
+                  <span className="flex-1 text-sm text-slate-600 truncate font-mono">{inviteUrl}</span>
+                </div>
+                <button
+                  onClick={handleCopyLink}
+                  className={`w-full py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors ${
+                    copied ? 'bg-green-500 text-white' : 'bg-faktory-blue text-white hover:bg-[#2c6a9a]'
+                  }`}
+                >
+                  {copied ? <Check size={16} /> : <Copy size={16} />}
+                  {copied ? 'Link copiado!' : 'Copiar link'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenInviteModal}
+                  className="w-full py-2 rounded-lg text-sm text-slate-400 hover:text-slate-600 transition-colors"
+                >
+                  Gerar novo convite
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

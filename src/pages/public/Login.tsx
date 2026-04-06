@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
-import { auth, db } from '../../utils/firebase';
+import { auth } from '../../utils/firebase';
+import { api } from '../../utils/api';
 import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
 import { Lock, Mail, AlertCircle, Eye, ShieldCheck } from 'lucide-react';
 import { User } from '../../@types';
 
@@ -24,20 +24,14 @@ export default function Login() {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const firebaseUser = userCredential.user;
       const token = await firebaseUser.getIdToken();
-      
-      const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-      
-      if (!userDoc.exists()) {
-        setError('Dados do usuário não encontrados. Por favor, entre em contato com o suporte.');
-        setLoading(false);
-        return;
-      }
 
-      const userData = userDoc.data() as User;
+      const userData = await api.get<User>('/api/auth/me');
 
       login(userData, token);
-      if (userData.role === 'admin') {
+      if (userData.role === 'superadmin') {
         navigate('/admin');
+      } else if (userData.role === 'company_admin') {
+        navigate('/empresa');
       } else {
         navigate('/app');
       }
@@ -62,20 +56,13 @@ export default function Login() {
       const firebaseUser = result.user;
       const token = await firebaseUser.getIdToken();
 
-      const userDocRef = doc(db, 'users', firebaseUser.uid);
-      const userDoc = await getDoc(userDocRef);
-
-      if (!userDoc.exists()) {
-        setError('Dados do usuário não encontrados. Por favor, entre em contato com o suporte.');
-        setLoading(false);
-        return;
-      }
-
-      const userData = userDoc.data() as User;
+      const userData = await api.get<User>('/api/auth/me');
 
       login(userData, token);
-      if (userData.role === 'admin') {
+      if (userData.role === 'superadmin') {
         navigate('/admin');
+      } else if (userData.role === 'company_admin') {
+        navigate('/empresa');
       } else {
         navigate('/app');
       }
@@ -103,7 +90,7 @@ export default function Login() {
               <div className="w-8 h-8 bg-gradient-to-br from-faktory-blue to-faktory-yellow rounded flex items-center justify-center text-white font-bold">F</div>
               <span className="text-2xl font-semibold text-[#4a5568] tracking-tight">Faktory</span>
             </div>
-            <span className="text-[10px] text-faktory-yellow font-bold self-end -mt-1 mr-1">Flow ■</span>
+            <span className="text-[10px] text-faktory-yellow font-bold self-end -mt-1 mr-1">Play ▶</span>
           </div>
         </div>
       </div>

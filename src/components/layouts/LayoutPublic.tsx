@@ -11,7 +11,7 @@ export default function LayoutPublic() {
                 <div className="w-6 h-6 bg-gradient-to-br from-faktory-blue to-faktory-yellow rounded flex items-center justify-center text-white font-bold text-xs">F</div>
                 <span className="text-lg font-bold text-[#4a5568]">Faktory</span>
               </div>
-              <span className="text-[8px] text-faktory-yellow font-bold self-end -mt-0.5">Flow ■</span>
+              <span className="text-[8px] text-faktory-yellow font-bold self-end -mt-0.5">Play ▶</span>
             </div>
           </Link>
           
@@ -29,7 +29,7 @@ export default function LayoutPublic() {
       </main>
       <footer className="bg-white border-t border-gray-200 py-8">
         <div className="container mx-auto px-6 text-center text-gray-400 text-[10px] font-bold uppercase tracking-widest">
-          © 2026 EG Faktory Softwares • Faktory Flow v1.0.0
+          © 2026 EG Faktory Softwares • Faktory Play v1.0.0
         </div>
       </footer>
     </div>
