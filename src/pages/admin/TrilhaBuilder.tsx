@@ -55,8 +55,9 @@ export default function AdminTrilhaBuilder() {
         if (id) {
           await api.put(`/api/trails/${trailId}`, finalData);
         } else {
-          await api.post('/api/trails', finalData);
-          navigate(`/admin/trilhas/${trailId}`, { replace: true });
+          const res = await api.post<any>('/api/trails', finalData);
+          const returnedId = res?.id || trailId;
+          navigate(`/admin/trilhas/${returnedId}`, { replace: true });
         }
         setLastSaved(new Date());
         setIsDirty(false);
@@ -105,8 +106,9 @@ export default function AdminTrilhaBuilder() {
       if (id) {
         await api.put(`/api/trails/${trailId}`, finalData);
       } else {
-        await api.post('/api/trails', finalData);
-        navigate(`/admin/trilhas/${trailId}`, { replace: true });
+        const res = await api.post<any>('/api/trails', finalData);
+        const returnedId = res?.id || trailId;
+        navigate(`/admin/trilhas/${returnedId}`, { replace: true });
       }
       setLastSaved(new Date());
       setIsDirty(false);
@@ -224,8 +226,9 @@ export default function AdminTrilhaBuilder() {
         if (id) {
           await api.put(`/api/trails/${trailId}`, finalData);
         } else {
-          await api.post('/api/trails', finalData);
-          navigate(`/admin/trilhas/${trailId}`, { replace: true });
+          const res = await api.post<any>('/api/trails', finalData);
+          const returnedId = res?.id || trailId;
+          navigate(`/admin/trilhas/${returnedId}`, { replace: true });
         }
         setLastSaved(new Date());
         setIsDirty(false);
