@@ -41,6 +41,7 @@ export interface Lesson {
     loop?: boolean;
     controls?: boolean;
   };
+  sublessons?: Lesson[];
 }
 
 export interface Module {
