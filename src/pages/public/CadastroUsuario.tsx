@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { User as UserIcon, Mail, Lock, Eye, EyeOff, CheckCircle, Loader2 } from 'lucide-react';
+import { User as UserIcon, Mail, Lock, Eye, EyeOff, Loader2, Building2 } from 'lucide-react';
 import { auth } from '../../utils/firebase';
 import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
@@ -18,7 +18,7 @@ interface InviteInfo {
 
 export default function CadastroUsuario() {
   const [searchParams] = useSearchParams();
-  const token = searchParams.get('token') || '';
+  const token = searchParams.get('invite') || searchParams.get('token') || '';
   const navigate = useNavigate();
 
   const [invite, setInvite] = useState<InviteInfo | null>(null);
@@ -33,32 +33,25 @@ export default function CadastroUsuario() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
 
   const { login } = useAuthStore();
   const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
 
   useEffect(() => {
     if (!token) {
-      setInviteError('Link inválido — token de convite ausente.');
-      setValidating(false);
+      navigate('/register', { replace: true });
       return;
     }
 
-    const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
     fetch(`${BASE_URL}/api/invites/${token}`)
       .then(async res => {
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.message || (res.status === 404 ? 'Convite não encontrado ou já utilizado.' : `Erro ${res.status}`));
-        }
-        return res.json() as Promise<InviteInfo>;
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 404) throw new Error('Convite não encontrado.');
+        if (res.status === 410) throw new Error('Convite expirado ou já utilizado.');
+        if (!res.ok) throw new Error(data.message || `Erro ${res.status}`);
+        return data as InviteInfo;
       })
       .then(data => {
-        if (new Date(data.expiresAt) < new Date()) {
-          setInviteError('Este convite expirou. Solicite um novo ao administrador.');
-          return;
-        }
         setInvite(data);
         if (data.invitedEmail) setEmail(data.invitedEmail);
         if (data.invitedName) setName(data.invitedName);
@@ -72,6 +65,7 @@ export default function CadastroUsuario() {
     setGoogleLoading(true);
     try {
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
       const result = await signInWithPopup(auth, provider);
       const idToken = await result.user.getIdToken();
 
@@ -87,14 +81,13 @@ export default function CadastroUsuario() {
         return;
       }
 
-      // Buscar perfil completo e salvar na store
       const userData = await api.get<User>('/api/auth/me');
       login(userData, idToken);
-      navigate('/app');
+      navigate('/app', { replace: true });
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user') return;
       if (err.code === 'auth/unauthorized-domain') {
-        setError('Domínio não autorizado no Firebase. Adicione 127.0.0.1 em Authentication > Authorized domains.');
+        setError('Domínio não autorizado no Firebase. Adicione localhost em Authentication > Authorized domains.');
       } else {
         setError(err.message || 'Erro ao entrar com Google.');
       }
@@ -137,9 +130,12 @@ export default function CadastroUsuario() {
         return;
       }
 
-      // Establish Firebase session
-      await signInWithEmailAndPassword(auth, email, password);
-      setSuccess(true);
+      // Auto-login: estabelece sessão Firebase e popula o store
+      const credential = await signInWithEmailAndPassword(auth, email, password);
+      const idToken = await credential.user.getIdToken();
+      const userData = await api.get<User>('/api/auth/me');
+      login(userData, idToken);
+      navigate('/app', { replace: true });
     } catch (err: any) {
       setError(err.message || 'Erro ao criar conta. Tente novamente.');
     } finally {
@@ -166,31 +162,19 @@ export default function CadastroUsuario() {
     );
   }
 
-  if (success) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-10 text-center max-w-sm w-full space-y-4">
-          <CheckCircle className="mx-auto text-green-500" size={48} />
-          <h2 className="text-xl font-bold text-slate-800">Cadastro realizado!</h2>
-          <p className="text-sm text-slate-500">
-            Sua conta foi criada com sucesso em <span className="font-semibold">{invite?.companyName}</span>.
-          </p>
-          <button
-            onClick={() => navigate('/app')}
-            className="block w-full bg-faktory-blue text-white py-2.5 rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-colors"
-          >
-            Acessar plataforma
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 w-full max-w-sm space-y-6">
+        {/* Banner da empresa */}
+        <div className="bg-faktory-blue/5 border border-faktory-blue/20 rounded-xl px-4 py-3 flex items-center gap-3">
+          <Building2 size={18} className="text-faktory-blue shrink-0" />
+          <p className="text-sm text-slate-700">
+            Você foi convidado para entrar em{' '}
+            <span className="font-semibold text-faktory-blue">{invite?.companyName}</span>
+          </p>
+        </div>
+
         <div className="text-center">
-          <p className="text-xs font-bold text-slate-400 uppercase mb-1">{invite?.companyName}</p>
           <h1 className="text-2xl font-bold text-slate-800">Criar sua conta</h1>
           <p className="text-sm text-slate-500 mt-1">Preencha os dados para acessar a plataforma.</p>
         </div>
