@@ -21,12 +21,13 @@ import { MOCK_TRAILS } from '../../mocks/data';
 export default function AlunoAulaPlayer() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuthStore();
+  const { user, token } = useAuthStore();
   
   const [trail, setTrail] = useState<Trail | null>(null);
   const [currentLesson, setCurrentLesson] = useState<Lesson | null>(null);
   const [enrollment, setEnrollment] = useState<Enrollment | null>(null);
   const [loading, setLoading] = useState(true);
+  const [needAuth, setNeedAuth] = useState(false);
   const [quizAnswer, setQuizAnswer] = useState<number | null>(null);
   const [showQuizResult, setShowQuizResult] = useState(false);
   const [expandedModules, setExpandedModules] = useState<string[]>([]);
@@ -36,19 +37,63 @@ export default function AlunoAulaPlayer() {
       if (!id || !user) return;
 
       try {
-        // 1. Fetch trail
-        let trailData: Trail | null = null;
-        try {
-          trailData = await api.get<Trail>(`/api/trails/${id}`);
-        } catch {
-          const mockTrail = MOCK_TRAILS.find(t => t.id === id);
-          if (mockTrail) trailData = mockTrail;
-        }
+          // 1. Fetch trail with silent fallbacks (avoid noisy api logs on expected 404)
+          let trailData: Trail | null = null;
+          const BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
+          async function tryFetchSilent<T>(path: string): Promise<T | null | 'unauth'> {
+            try {
+              const headers: Record<string, string> = {};
+              if (token) headers['Authorization'] = `Bearer ${token}`;
+              const res = await fetch(`${BASE}${path}`, { headers });
+              if (res.status === 401) return 'unauth';
+              if (!res.ok) return null;
+              return await res.json();
+            } catch {
+              return null;
+            }
+          }
+
+          const r1 = await tryFetchSilent<Trail>(`/api/trails/${id}`);
+          if (r1 === 'unauth') {
+            setNeedAuth(true);
+            trailData = null;
+          } else {
+            trailData = r1 as Trail | null;
+          }
+
+          if (!trailData && !needAuth) {
+            const r2 = await tryFetchSilent<Trail>(`/api/trails/${id}/export`);
+            if (r2 === 'unauth') { setNeedAuth(true); }
+            else trailData = r2 as Trail | null;
+          }
+          if (!trailData && !needAuth) {
+            const all = await tryFetchSilent<Trail[]>(`/api/trails`);
+            if (all === 'unauth') { setNeedAuth(true); }
+            else if (all) trailData = all.find(t => t.id === id) || null;
+          }
+          if (!trailData) {
+            const mockTrail = MOCK_TRAILS.find(t => t.id === id);
+            if (mockTrail) trailData = mockTrail;
+          }
 
         if (trailData) {
           setTrail(trailData);
-          setCurrentLesson(trailData.modules[0].lessons[0]);
-          setExpandedModules([trailData.modules[0].id]);
+          // pick a sensible current lesson: prefer active lesson, fallback to first available
+          const firstModule = trailData.modules && trailData.modules[0];
+          const firstLesson = firstModule?.lessons && firstModule.lessons[0];
+          if (firstLesson) setCurrentLesson(firstLesson);
+          else {
+            // try to find first sublesson
+            let found: Lesson | null = null;
+            for (const m of trailData.modules) {
+              for (const l of m.lessons) {
+                if (l.sublessons && l.sublessons.length > 0) { found = l.sublessons[0]; break; }
+              }
+              if (found) break;
+            }
+            if (found) setCurrentLesson(found);
+          }
+          if (trailData.modules && trailData.modules[0]) setExpandedModules([trailData.modules[0].id]);
         }
 
         // 2. Fetch lesson progress
@@ -150,6 +195,19 @@ export default function AlunoAulaPlayer() {
   }
 
   if (!trail || !currentLesson) {
+    if (needAuth) {
+      return (
+        <div className="flex flex-col items-center justify-center h-screen bg-[#f4f7f9]">
+          <h2 className="text-xl font-bold text-slate-800">Acesso negado</h2>
+          <p className="text-slate-600 mt-2">Você precisa estar logado para acessar esta trilha.</p>
+          <div className="mt-4 flex gap-3">
+            <button onClick={() => navigate('/login')} className="text-white bg-faktory-blue px-4 py-2 rounded">Entrar</button>
+            <button onClick={() => navigate('/app')} className="text-faktory-blue border border-faktory-blue px-4 py-2 rounded">Voltar ao Dashboard</button>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-[#f4f7f9]">
         <h2 className="text-xl font-bold text-slate-800">Trilha não encontrada</h2>
