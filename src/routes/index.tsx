@@ -7,6 +7,7 @@ import Home from '../pages/public/Home';
 import Login from '../pages/public/Login';
 import Register from '../pages/public/Register';
 import CadastroUsuario from '../pages/public/CadastroUsuario';
+import AuthAcao from '../pages/public/AuthAcao';
 
 // Admin Pages
 import AdminDashboard from '../pages/admin/Dashboard';
@@ -68,7 +69,8 @@ export default function AppRoutes() {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
-        <Route path="/cadastro-usuario" element={<CadastroUsuario />} />
+        <Route path="/cadastro" element={<CadastroUsuario />} />
+        <Route path="/auth/acao" element={<AuthAcao />} />
       </Route>
 
       {/* Admin Routes */}
