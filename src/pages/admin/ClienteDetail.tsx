@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../../utils/api';
-import { Company, User, Trail } from '../../@types';
-import { ArrowLeft, Building2, Users, BookOpen, Link2, Plus, Mail, Trash2, Edit2, Loader2, Check, Copy, X } from 'lucide-react';
+import { Company, User, Trail, UserRole } from '../../@types';
+import { ArrowLeft, Building2, Users, BookOpen, Link2, Mail, Trash2, Edit2, Loader2, Check, Copy, X } from 'lucide-react';
 import { cn } from '../../utils/utils';
 
 export default function AdminClienteDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
   const [company, setCompany] = useState<Company | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [allTrails, setAllTrails] = useState<Trail[]>([]);
@@ -21,6 +22,21 @@ export default function AdminClienteDetail() {
   const [inviteUrl, setInviteUrl] = useState('');
   const [copied, setCopied] = useState(false);
   const [inviteModalError, setInviteModalError] = useState('');
+
+  // Edit user
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editRole, setEditRole] = useState<UserRole>('student');
+  const [editAllowedTrails, setEditAllowedTrails] = useState<string[]>([]);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  // Delete user
+  const [deletingUser, setDeletingUser] = useState<User | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // Toast
+  const [toast, setToast] = useState('');
 
   const handleOpenInviteModal = () => {
     setInviteEmail('');
@@ -53,6 +69,73 @@ export default function AdminClienteDetail() {
     navigator.clipboard.writeText(inviteUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
+  };
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 3000);
+  };
+
+  const handleOpenEdit = (u: User) => {
+    setEditingUser(u);
+    setEditName(u.name);
+    setEditRole(u.role);
+    // user may have allowedTrails provided by backend
+    const ua = (u as any).allowedTrails as string[] | undefined;
+    setEditAllowedTrails(ua ? [...ua] : []);
+    setEditError('');
+  };
+
+  const handleEditSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+    setEditSaving(true);
+    setEditError('');
+    try {
+      const payload: any = { name: editName, role: editRole, allowedTrails: editAllowedTrails };
+      await api.put(`/api/users/${editingUser.id}`, payload);
+      setUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, name: editName, role: editRole, allowedTrails: editAllowedTrails } as any : u));
+      setEditingUser(null);
+      showToast('Usuário atualizado com sucesso.');
+    } catch (err: any) {
+      setEditError(err.message || 'Erro ao salvar alterações.');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deletingUser) return;
+    setDeleteLoading(true);
+    try {
+      await api.delete(`/api/users/${deletingUser.id}`);
+      setUsers(prev => prev.filter(u => u.id !== deletingUser.id));
+      setDeletingUser(null);
+      showToast('Usuário removido.');
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao remover usuário.');
+      setDeletingUser(null);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const handleSendPasswordReset = async (u: User) => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: u.email }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.message || 'Erro ao enviar e-mail de redefinição.');
+        return;
+      }
+      showToast(`E-mail de redefinição de senha enviado para ${u.email}.`);
+    } catch {
+      showToast('Erro ao enviar e-mail de redefinição.');
+    }
   };
 
   useEffect(() => {
@@ -205,9 +288,39 @@ export default function AdminClienteDetail() {
                         </td>
                         <td className="px-4 py-4 text-right">
                           <div className="flex items-center justify-end gap-3 text-slate-300">
-                            <button className="hover:text-faktory-blue"><Edit2 size={16} /></button>
-                            <button className="hover:text-red-600"><Trash2 size={16} /></button>
-                            <button className="hover:text-slate-600"><Mail size={16} /></button>
+                            <div className="relative group">
+                              <button
+                                onClick={() => handleOpenEdit(user)}
+                                className="hover:text-faktory-blue transition-colors"
+                              >
+                                <Edit2 size={16} />
+                              </button>
+                              <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                                Editar
+                              </span>
+                            </div>
+                            <div className="relative group">
+                              <button
+                                onClick={() => setDeletingUser(user)}
+                                className="hover:text-red-600 transition-colors"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                              <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                                Excluir
+                              </span>
+                            </div>
+                            <div className="relative group">
+                              <button
+                                onClick={() => handleSendPasswordReset(user)}
+                                className="hover:text-slate-600 transition-colors"
+                              >
+                                <Mail size={16} />
+                              </button>
+                              <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                                Redefinir senha
+                              </span>
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -261,6 +374,168 @@ export default function AdminClienteDetail() {
           </div>
         )}
       </div>
+
+      {/* ── Modal: Editar Usuário ── */}
+      {editingUser && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
+            <div className="flex items-center justify-between p-5 border-b border-slate-100">
+              <h2 className="text-base font-bold text-slate-800">Editar Usuário</h2>
+              <button onClick={() => setEditingUser(null)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleEditSave} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Nome</label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-faktory-blue focus:border-faktory-blue outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Cargo / Perfil</label>
+                <select
+                  value={editRole}
+                  onChange={e => setEditRole(e.target.value as UserRole)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-faktory-blue outline-none bg-white"
+                >
+                  <option value="student">Aluno (student)</option>
+                  <option value="company_admin">Admin da Empresa (company_admin)</option>
+                </select>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-bold text-slate-600">
+                    Trilhas por usuário
+                    {editAllowedTrails.length > 0 && (
+                      <span className="ml-2 bg-faktory-blue text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                        {editAllowedTrails.length} selecionada{editAllowedTrails.length > 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditAllowedTrails(allTrails.map(t => t.id))}
+                      className="text-[11px] text-faktory-blue hover:underline"
+                    >
+                      Todas
+                    </button>
+                    <span className="text-slate-300 text-[11px]">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setEditAllowedTrails([])}
+                      className="text-[11px] text-slate-400 hover:underline"
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-1.5 max-h-44 overflow-auto border border-slate-100 rounded-lg p-2">
+                  {allTrails.map(t => {
+                    const checked = editAllowedTrails.includes(t.id);
+                    const inheritedFromCompany = company?.allowedTrails.includes(t.id);
+                    return (
+                      <label
+                        key={t.id}
+                        className={cn(
+                          'flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer transition-colors',
+                          checked ? 'bg-blue-50' : 'hover:bg-slate-50'
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            setEditAllowedTrails(prev =>
+                              prev.includes(t.id) ? prev.filter(id => id !== t.id) : [...prev, t.id]
+                            )
+                          }
+                          className="w-4 h-4 text-faktory-blue rounded"
+                        />
+                        <span className={cn('text-sm flex-1', checked ? 'text-faktory-blue font-medium' : 'text-slate-700')}>
+                          {t.title}
+                        </span>
+                        {inheritedFromCompany && !checked && (
+                          <span className="text-[10px] text-slate-400 border border-slate-200 rounded px-1.5 py-0.5">
+                            empresa
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-slate-400 mt-1.5">
+                  {editAllowedTrails.length === 0
+                    ? '⚠ Nenhuma marcada — o acesso seguirá as trilhas liberadas para a empresa.'
+                    : 'Somente as trilhas marcadas acima serão acessíveis por este usuário.'}
+                </p>
+              </div>
+              {editError && (
+                <p className="text-xs text-red-500 bg-red-50 px-3 py-2 rounded-lg">{editError}</p>
+              )}
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setEditingUser(null)}
+                  className="flex-1 py-2 rounded-lg text-sm font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={editSaving}
+                  className="flex-1 py-2 rounded-lg text-sm font-bold bg-faktory-blue text-white hover:bg-[#2c6a9a] transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+                >
+                  {editSaving && <Loader2 size={14} className="animate-spin" />}
+                  {editSaving ? 'Salvando...' : 'Salvar'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Confirmar Exclusão ── */}
+      {deletingUser && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h2 className="text-base font-bold text-slate-800">Remover usuário?</h2>
+            <p className="text-sm text-slate-500">
+              O usuário <span className="font-semibold text-slate-700">{deletingUser.name}</span> ({deletingUser.email}) será removido da empresa. Esta ação não pode ser desfeita.
+            </p>
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setDeletingUser(null)}
+                className="flex-1 py-2 rounded-lg text-sm font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={deleteLoading}
+                className="flex-1 py-2 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+              >
+                {deleteLoading && <Loader2 size={14} className="animate-spin" />}
+                {deleteLoading ? 'Removendo...' : 'Remover'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Toast ── */}
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-sm px-5 py-3 rounded-xl shadow-lg z-50 animate-fade-in">
+          {toast}
+        </div>
+      )}
+
+      {/* ── Modal: Convidar Funcionário ── */}
       {showInviteModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-lg">
