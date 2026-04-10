@@ -1,0 +1,148 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Faktory Play API — Spec para Frontend AI",
+    "version": "1.0.0",
+    "description": "Especificação OpenAPI em português com exemplos para o agente de frontend AI. Contém endpoints principais para trilhas, empresas e relatórios."
+  },
+  "servers": [
+    { "url": "http://localhost:3001", "description": "Servidor local (dev)" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "uid": { "type": "string" },
+          "name": { "type": "string" },
+          "email": { "type": ["string", "null"] },
+          "role": { "type": "string" },
+          "companyId": { "type": ["string", "null"] },
+          "allowedTrails": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "Trail": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "durationMonths": { "type": ["number", "null"] },
+          "totalLessons": { "type": ["number", "null"] },
+          "modules": { "type": ["array", "null"], "items": { "type": "object" } }
+        }
+      },
+      "UserTrail": {
+        "type": "object",
+        "properties": {
+          "uid": { "type": "string" },
+          "trailId": { "type": "string" },
+          "companyId": { "type": ["string", "null"] },
+          "status": { "type": "string", "description": "not_started | in_progress | completed | atrasado" },
+          "totalProgress": { "type": "number" },
+          "currentModuleId": { "type": ["string", "null"] },
+          "currentModuleProgress": { "type": ["number", "null"] }
+        }
+      },
+      "CompanyTrailsWithUsers": {
+        "type": "object",
+        "properties": {
+          "companyId": { "type": "string" },
+          "trails": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "trailId": { "type": "string" },
+                "title": { "type": "string" },
+                "durationMonths": { "type": ["number", "null"] },
+                "users": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "uid": { "type": "string" },
+                      "name": { "type": "string" },
+                      "email": { "type": ["string", "null"] },
+                      "role": { "type": "string" },
+                      "userTrail": { "$ref": "#/components/schemas/UserTrail" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "CompanyReport": {
+        "type": "object",
+        "properties": {
+          "companyId": { "type": "string" },
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "trails": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/openapi.json": {
+      "get": {
+        "summary": "OpenAPI JSON gerado",
+        "responses": { "200": { "description": "Spec JSON", "content": { "application/json": { "schema": { "type": "object" } } } }
+      }
+    },
+    "/api/trails": {
+      "get": {
+        "summary": "Listar trilhas permitidas para o usuário autenticado",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Lista de trilhas",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Trail" } } } }
+          }
+        }
+      }
+    },
+    "/api/trails/{id}": {
+      "get": {
+        "summary": "Obter trilha por id (document id ou campo id)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Trilha encontrada", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trail" } } } },
+          "403": { "description": "Acesso negado" },
+          "404": { "description": "Trilha não encontrada" }
+        }
+      }
+    },
+    "/api/companies/{id}/trails-with-users": {
+      "get": {
+        "summary": "Trilhas da empresa com usuários e progresso (company_admin | superadmin)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Trilhas com usuários", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CompanyTrailsWithUsers" }, "examples": { "ex1": { "value": { "companyId": "ksycKHYYCEmOI49OVl8x", "trails": [ { "trailId": "UVbi7glDGiJPKjYtV1vg", "title": "Faktory One - Implantação", "durationMonths": 3, "users": [ { "uid": "lVrswF4A1zMtN40aJKAdk5z4kn53", "name": "UserTest Fak", "email": "testesfaktorytestes@gmail.com", "role": "student", "userTrail": { "uid": "lVrswF4A1zMtN40aJKAdk5z4kn53", "trailId": "UVbi7glDGiJPKjYtV1vg", "companyId": "ksycKHYYCEmOI49OVl8x", "status": "not_started", "totalProgress": 0 } } ] } ] } } } } }
+        }
+      }
+    },
+    "/api/companies/{id}/report": {
+      "get": {
+        "summary": "Relatório consolidado por empresa (company_admin | superadmin)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Relatório por empresa", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CompanyReport" } } } }
+        }
+      }
+    },
+    "/api/users": {
+      "get": {
+        "summary": "Listar usuários (superadmin -> todos | company_admin -> só da empresa)",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Lista de usuários", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/User" } } } } } }
+    }
+  }
+}
