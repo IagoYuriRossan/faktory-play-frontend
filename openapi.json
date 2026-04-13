@@ -24,13 +24,34 @@
           "allowedTrails": { "type": "array", "items": { "type": "string" } }
         }
       },
+      "Project": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "companyId": { "type": ["string", "null"] }
+        }
+      },
+      "UserProgress": {
+        "type": "object",
+        "properties": {
+          "uid": { "type": "string" },
+          "trailId": { "type": "string" },
+          "lessonId": { "type": "string" },
+          "status": { "type": "string" },
+          "progressPercent": { "type": "number" },
+          "lastAccessedAt": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
       "Trail": {
         "type": "object",
         "properties": {
           "id": { "type": "string" },
           "title": { "type": "string" },
           "description": { "type": ["string", "null"] },
-          "durationMonths": { "type": ["number", "null"] }
+          "durationMonths": { "type": ["number", "null"] },
+          "lastUpdatedBy": { "type": ["string", "null"], "description": "UID who last updated" },
+          "lastUpdatedAt": { "type": ["string", "null"], "format": "date-time", "description": "ISO timestamp of last update" }
         }
       },
       "UserTrail": {
@@ -83,6 +104,71 @@
           }
         }
       }
+    ,
+    "post": {
+      "summary": "Create a new trail (company_admin or superadmin)",
+      "security": [{ "bearerAuth": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/Trail" } }
+        }
+      },
+      "responses": {
+        "201": { "description": "Trail created", "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "string" }, "companyId": { "type": "string" } } } } } },
+        "400": { "description": "Invalid request" },
+        "401": { "description": "Unauthorized" }
+      }
+    }
+    },
+    "/api/auth/me": {
+      "get": {
+        "summary": "Retorna perfil do usuário autenticado (autocreate se necessário)",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Perfil do usuário", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "401": { "description": "Não autenticado" }
+        }
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "summary": "Lista projects (admin vê todos; outros veem da própria company)",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Lista de projects", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Project" } } } } } }
+      }
+    },
+    "/api/trails/{id}/export": {
+      "get": {
+        "summary": "Exporta JSON da trilha (download)",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "200": { "description": "Arquivo JSON da trilha", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trail" } } } }, "404": { "description": "Trilha não encontrada" } }
+      }
+    },
+    "/api/users/{userId}/progress": {
+      "get": {
+        "summary": "Retorna progresso do usuário para trilhas/aulas",
+        "parameters": [ { "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Lista de progressos", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/UserProgress" } } } } } }
+      }
+    },
+    "/api/users/{userId}/progress/{lessonId}": {
+      "put": {
+        "summary": "Atualiza progresso de uma aula para o usuário",
+        "parameters": [ { "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "lessonId", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UserProgress" } } } },
+        "responses": { "200": { "description": "Progresso atualizado" }, "400": { "description": "Requisição inválida" } }
+      }
+    },
+    "/api/companies/{id}": {
+      "get": {
+        "summary": "Retorna dados da empresa por id",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Dados da company", "content": { "application/json": { "schema": { "type": "object" } } } }, "404": { "description": "Company não encontrada" } }
+      }
     },
     "/api/trails/{id}": {
       "get": {
@@ -95,6 +181,19 @@
           "200": { "description": "Trilha encontrada", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trail" } } } },
           "403": { "description": "Acesso negado" },
           "404": { "description": "Trilha não encontrada" }
+        }
+      },
+      "put": {
+        "summary": "Update or create (upsert) a trail by id (admin)",
+        "description": "If the trail exists it is updated (200). If it does not exist a new trail is created with the provided id (201). Fields `lastUpdatedBy` and `lastUpdatedAt` are set by the server.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trail" } } } },
+        "responses": {
+          "200": { "description": "Trail updated", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "updated": { "type": "boolean" } } } } } },
+          "201": { "description": "Trail created", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "created": { "type": "boolean" }, "id": { "type": "string" } } } } } },
+          "400": { "description": "Invalid request" },
+          "401": { "description": "Unauthorized" }
         }
       }
     },
