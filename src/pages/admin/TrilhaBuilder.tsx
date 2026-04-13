@@ -63,6 +63,7 @@ export default function AdminTrilhaBuilder() {
         setIsDirty(false);
       } catch (error) {
         console.error('Auto-save failed:', error);
+        showToast('Auto-save falhou — verifique conexão e autenticação');
       }
     }, 2000);
 
@@ -74,11 +75,27 @@ export default function AdminTrilhaBuilder() {
       if (!id) return;
       try {
         const data = await api.get<Trail>(`/api/trails/${id}`);
-        setTrailData({
-          title: data.title,
-          description: data.description,
-          modules: data.modules,
-        });
+        // If this is the Faktory One template and the user asked to start fresh,
+        // clear all modules so they can re-add items from scratch.
+            if (data.title === 'Faktory One - Implantação') {
+              const cleared = { title: data.title, description: data.description, modules: [] as Module[] };
+          setTrailData(cleared);
+          setIsDirty(true);
+          try {
+            const finalData: Trail = { id: trailId, ...cleared };
+            await api.put(`/api/trails/${trailId}`, finalData);
+            showToast('Conteúdo da trilha Faktory One apagado');
+          } catch (err) {
+            console.error('Erro ao persistir limpeza da trilha:', err);
+            showToast('Trilha limpa localmente; salve para persistir');
+          }
+        } else {
+          setTrailData({
+            title: data.title,
+            description: data.description,
+            modules: data.modules,
+          });
+        }
         if (data.modules.length > 0) {
           setActiveModuleId(data.modules[0].id);
           if (data.modules[0].lessons.length > 0) {
@@ -99,12 +116,32 @@ export default function AdminTrilhaBuilder() {
     fetchTrail();
   }, [id]);
 
+  // helper to create block-wrapped content so prefilled items get the same controls
+  const makeBlock = (html: string, type = 'custom') => {
+    const id = `b-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const safe = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false });
+    return `<!-- block:${type}:${id} -->\n${safe}\n<!-- /block:${type}:${id} -->`;
+  };
+
+  const welcomeContent = makeBlock('<p>Bem-vindo à primeira aula.</p>');
+
   const handleSave = async () => {
     setSaving(true);
     try {
       const finalData: Trail = { id: trailId, ...trailData };
       if (id) {
-        await api.put(`/api/trails/${trailId}`, finalData);
+        try {
+          await api.put(`/api/trails/${trailId}`, finalData);
+        } catch (err: any) {
+          // If backend responds that document doesn't exist, try creating it (fallback)
+          if (err && err.status === 404) {
+            const res = await api.post<any>('/api/trails', finalData);
+            const returnedId = res?.id || trailId;
+            navigate(`/admin/trilhas/${returnedId}`, { replace: true });
+          } else {
+            throw err;
+          }
+        }
       } else {
         const res = await api.post<any>('/api/trails', finalData);
         const returnedId = res?.id || trailId;
@@ -112,11 +149,67 @@ export default function AdminTrilhaBuilder() {
       }
       setLastSaved(new Date());
       setIsDirty(false);
+      showToast('Trilha salva');
     } catch (error) {
       console.error('Error saving trail:', error);
+      showToast('Erro ao salvar trilha — verifique conexão e autenticação');
     } finally {
       setSaving(false);
     }
+  };
+
+  const testSaveAndReload = async () => {
+    setSaving(true);
+    try {
+      const finalData: Trail = { id: trailId, ...trailData };
+      console.debug('[TEST] enviando PUT /api/trails', finalData);
+      if (id) {
+        const resp = await api.put(`/api/trails/${trailId}`, finalData);
+        console.debug('[TEST] PUT response:', resp);
+      } else {
+        const res = await api.post<any>('/api/trails', finalData);
+        console.debug('[TEST] POST response:', res);
+      }
+      // imediatamente buscar do servidor
+      const fetched = await api.get<Trail>(`/api/trails/${trailId}`);
+      console.debug('[TEST] GET after save:', fetched);
+      showToast('Teste concluído — verifique console para detalhes');
+    } catch (err) {
+      console.error('[TEST] Erro no teste de salvar+recarregar:', err);
+      showToast('Teste falhou — veja console');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reorderModule = (dragId: string, dropId: string) => {
+    setTrailData(prev => {
+      const modules = [...prev.modules];
+      const fromIdx = modules.findIndex(m => m.id === dragId);
+      const toIdx = modules.findIndex(m => m.id === dropId);
+      if (fromIdx === -1 || toIdx === -1) return prev;
+      const [item] = modules.splice(fromIdx, 1);
+      modules.splice(toIdx, 0, item);
+      return { ...prev, modules };
+    });
+    setIsDirty(true);
+  };
+
+  const reorderLesson = (moduleId: string, dragId: string, dropId: string) => {
+    setTrailData(prev => {
+      const modules = prev.modules.map(m => {
+        if (m.id !== moduleId) return m;
+        const lessons = [...m.lessons];
+        const fromIdx = lessons.findIndex(l => l.id === dragId);
+        const toIdx = lessons.findIndex(l => l.id === dropId);
+        if (fromIdx === -1 || toIdx === -1) return m;
+        const [item] = lessons.splice(fromIdx, 1);
+        lessons.splice(toIdx, 0, item);
+        return { ...m, lessons };
+      });
+      return { ...prev, modules };
+    });
+    setIsDirty(true);
   };
 
   const toggleModule = (moduleId: string) => {
@@ -132,7 +225,8 @@ export default function AdminTrilhaBuilder() {
     setLoading(true);
     try {
       const data = await api.get<Trail>(`/api/trails/${id}`);
-      setTrailData({ title: data.title, description: data.description, modules: data.modules });
+            const resp = await api.put(`/api/trails/${trailId}`, finalData);
+            console.debug('Autosave PUT response:', resp);
       setIsDirty(false);
       setShowPreviewModal(false);
       showToast('Recarregado do servidor');
@@ -187,6 +281,7 @@ export default function AdminTrilhaBuilder() {
       '5. Faturamento',
       '6. Financeiro'
     ];
+    
 
     const newModules: Module[] = stages.map((title, index) => ({
       id: `m-${Date.now()}-${index}`,
@@ -196,7 +291,8 @@ export default function AdminTrilhaBuilder() {
           id: `l-${Date.now()}-${index}-1`,
           title: `Introdução ao ${title.split('. ')[1]}`,
           videoUrl: '',
-          content: `<p>Bem-vindo à etapa de ${title.split('. ')[1]}. Aqui você aprenderá os conceitos fundamentais.</p>`,
+          videoPosition: 'top',
+          content: makeBlock(`<p>Bem-vindo à etapa de ${title.split('. ')[1]}. Aqui você aprenderá os conceitos fundamentais.</p>`),
           quiz: {
             id: `q-${Date.now()}-${index}`,
             question: 'O que aprendemos nesta aula?',
@@ -241,18 +337,31 @@ export default function AdminTrilhaBuilder() {
   };
 
   const addModule = () => {
+    const newLessonId = Date.now().toString();
     const newModule: Module = {
       id: Date.now().toString(),
       title: `Etapa ${trailData.modules.length + 1}`,
-      lessons: []
+      lessons: [
+        {
+          id: newLessonId,
+          title: 'Boas vindas',
+          videoUrl: '',
+          videoPosition: 'top',
+          content: welcomeContent,
+          quiz: { id: Date.now().toString() + '-quiz', question: '', options: ['', '', '', ''], correctIndex: 0 }
+        }
+      ]
     };
     setTrailData(prev => ({ ...prev, modules: [...prev.modules, newModule] }));
     setActiveModuleId(newModule.id);
+    setActiveLessonId(newLessonId);
     setExpandedModules(prev => ({ ...prev, [newModule.id]: true }));
     setIsDirty(true);
-    // Persistir módulo no backend
+    console.debug('addModule: created', newModule);
+    showToast('Etapa criada');
+    // Não chamar endpoints por-item (backend não implementa). Rely no autosave/PUT global.
     if (id) {
-      api.post(`/api/trails/${trailId}/modules`, newModule).catch(err => console.error('Erro ao criar módulo:', err));
+      console.warn('Backend não expõe endpoints de módulo; mudanças serão salvas no PUT /api/trails/{id}');
     }
   };
 
@@ -271,18 +380,26 @@ export default function AdminTrilhaBuilder() {
     }));
     setIsDirty(true);
     if (activeModuleId === moduleId) setActiveModuleId(null);
-    // Remover módulo no backend
+    // Não chamar endpoint de remoção por-item; rely no PUT global para persistência.
     if (id) {
-      api.delete(`/api/trails/${trailId}/modules/${moduleId}`).catch(err => console.error('Erro ao remover módulo:', err));
+      console.warn('Backend não expõe endpoint de remoção de módulo; salve a trilha para persistir a remoção.');
     }
   };
 
   const addLesson = (moduleId: string, parentLessonId?: string) => {
+    // ensure active module is set so subsequent edits/saves work
+    setActiveModuleId(moduleId);
+    const newLessonId = Date.now().toString();
+    const logoHtml = `<div class="faktory-logo"><img src="/logo.png" alt="Faktory Logo" style="max-width:320px;"/></div>`;
+    const logoBlockId = `b-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const logoContent = `<!-- block:logo:${logoBlockId} -->\n${DOMPurify.sanitize(logoHtml, { WHOLE_DOCUMENT: false })}\n<!-- /block:logo:${logoBlockId} -->`;
+
     const newLesson: Lesson = {
-      id: Date.now().toString(),
+      id: newLessonId,
       title: 'Nova Aula',
       videoUrl: '',
-      content: '',
+      videoPosition: 'top',
+      content: parentLessonId ? logoContent : '',
       quiz: {
         id: Date.now().toString() + '-quiz',
         question: '',
@@ -307,22 +424,197 @@ export default function AdminTrilhaBuilder() {
     if (parentLessonId) {
       setActiveSublessonId(newLesson.id);
       setActiveLessonId(parentLessonId);
-      // Persistir subaula no backend
-      if (id) {
-        api.post(`/api/trails/${trailId}/modules/${moduleId}/lessons/${parentLessonId}/sublessons`, newLesson)
-          .catch(err => console.error('Erro ao criar subaula:', err));
-      }
+      // open edit mode for new sublesson
+      setEditingLessonId(newLesson.id);
+      setEditingLessonTitle(newLesson.title);
+      setEditingLessonParentId(parentLessonId);
+      // Backend não tem endpoint para criar sublessons individualmente; salvar a trilha completa.
+      if (id) console.warn('Backend não expõe endpoint para criar subaula; salve a trilha para persistir.');
     } else {
       setActiveLessonId(newLesson.id);
       setActiveSublessonId(null);
-      // Persistir aula no backend
-      if (id) {
-        api.post(`/api/trails/${trailId}/modules/${moduleId}/lessons`, newLesson)
-          .catch(err => console.error('Erro ao criar aula:', err));
-      }
+      // open edit mode for new lesson
+      setEditingLessonId(newLesson.id);
+      setEditingLessonTitle(newLesson.title);
+      setEditingLessonParentId(null);
+      // Backend não tem endpoint para criar aulas individualmente; salvar a trilha completa.
+        if (id) console.warn('Backend não expõe endpoint para criar aula; salve a trilha para persistir.');
     }
     showToast('Aula criada');
   };
+
+  const moveModule = (moduleId: string, dir: number) => {
+    setTrailData(prev => {
+      const modules = [...prev.modules];
+      const idx = modules.findIndex(m => m.id === moduleId);
+      const newIdx = idx + dir;
+      if (idx === -1 || newIdx < 0 || newIdx >= modules.length) return prev;
+      const item = modules.splice(idx, 1)[0];
+      modules.splice(newIdx, 0, item);
+      return { ...prev, modules };
+    });
+    setIsDirty(true);
+  };
+
+  const moveLesson = (moduleId: string, lessonId: string, dir: number, parentLessonId?: string) => {
+    setTrailData(prev => {
+      const modules = prev.modules.map(m => {
+        if (m.id !== moduleId) return m;
+        if (!parentLessonId) {
+          const lessons = [...m.lessons];
+          const idx = lessons.findIndex(l => l.id === lessonId);
+          const newIdx = idx + dir;
+          if (idx === -1 || newIdx < 0 || newIdx >= lessons.length) return m;
+          const item = lessons.splice(idx, 1)[0];
+          lessons.splice(newIdx, 0, item);
+          return { ...m, lessons };
+        }
+        return {
+          ...m,
+          lessons: m.lessons.map(l => {
+            if (l.id !== parentLessonId) return l;
+            const sub = [...(l.sublessons || [])];
+            const idx = sub.findIndex(s => s.id === lessonId);
+            const newIdx = idx + dir;
+            if (idx === -1 || newIdx < 0 || newIdx >= sub.length) return l;
+            const item = sub.splice(idx, 1)[0];
+            sub.splice(newIdx, 0, item);
+            return { ...l, sublessons: sub };
+          })
+        };
+      });
+      return { ...prev, modules };
+    });
+    setIsDirty(true);
+  };
+
+  const moveBlockById = (id: string, dir: number) => {
+    if (!activeLesson) return;
+    const content = activeLesson.content || '';
+    const blocks = parseBlocks(content);
+    if (blocks.length === 0) return;
+    const sorted = [...blocks].sort((a, b) => a.index - b.index);
+    const idx = sorted.findIndex(b => b.id === id);
+    if (idx === -1) return;
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+
+    const parts: string[] = [];
+    let last = 0;
+    for (const b of sorted) {
+      parts.push(content.slice(last, b.index));
+      parts.push(content.slice(b.index, b.index + b.length));
+      last = b.index + b.length;
+    }
+    parts.push(content.slice(last));
+
+    const partIndex = idx * 2 + 1;
+    const swapPartIndex = swapIdx * 2 + 1;
+    const newParts = [...parts];
+    const tmp = newParts[partIndex];
+    newParts[partIndex] = newParts[swapPartIndex];
+    newParts[swapPartIndex] = tmp;
+    const newContent = newParts.join('');
+    updateLesson({ content: newContent });
+  };
+
+  const setVideoPosition = (pos: 'title-top' | 'top' | 'bottom') => {
+    updateLesson({ videoPosition: pos });
+  };
+
+  const insertVideoAsBlock = () => {
+    if (!activeLesson || !activeLesson.videoUrl) return;
+    const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
+    const html = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
+    const block = genBlock(html, 'video');
+    updateLesson({ content: (activeLesson.content || '') + '\n' + block, videoUrl: '' });
+    setShowVideoModal(false);
+    showToast('Vídeo movido para o conteúdo como bloco');
+  };
+
+  // Drag & drop refs and handlers
+  const dragBlockIdRef = useRef<string | null>(null);
+  const dragModuleIdRef = useRef<string | null>(null);
+  const dragLessonIdRef = useRef<string | null>(null);
+  const dragVideoRef = useRef<boolean>(false);
+  const dragTitleRef = useRef<boolean>(false);
+  const blocksAreaRef = useRef<HTMLDivElement | null>(null);
+  const previewAreaRef = useRef<HTMLDivElement | null>(null);
+  const blockRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [dragPreview, setDragPreview] = useState<{ type: 'none' | 'title' | 'content' | 'block'; id?: string; rect?: { top: number; left: number; width: number; height: number }; pos?: 'before' | 'after'; source?: 'list' | 'preview' }>({ type: 'none' });
+
+  const reorderBlock = (dragId: string, dropId: string) => {
+    if (!activeLesson) return;
+    const content = activeLesson.content || '';
+    const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
+    const fromIdx = blocks.findIndex(b => b.id === dragId);
+    const toIdx = blocks.findIndex(b => b.id === dropId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const parts: string[] = [];
+    let last = 0;
+    for (const b of blocks) {
+      parts.push(content.slice(last, b.index));
+      parts.push(content.slice(b.index, b.index + b.length));
+      last = b.index + b.length;
+    }
+    parts.push(content.slice(last));
+
+    const element = parts.splice(fromIdx * 2 + 1, 1)[0];
+    parts.splice(toIdx * 2 + 1, 0, element);
+    const newContent = parts.join('');
+    updateLesson({ content: newContent });
+  };
+
+  const reorderBlockTo = (dragId: string, dropId: string, pos: 'before' | 'after') => {
+    if (!activeLesson) return;
+    const content = activeLesson.content || '';
+    const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
+    const fromIdx = blocks.findIndex(b => b.id === dragId);
+    const toIdx = blocks.findIndex(b => b.id === dropId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    // Build parts array [prefix, block, prefix, block, ...]
+    const parts: string[] = [];
+    let last = 0;
+    for (const b of blocks) {
+      parts.push(content.slice(last, b.index));
+      parts.push(content.slice(b.index, b.index + b.length));
+      last = b.index + b.length;
+    }
+    parts.push(content.slice(last));
+
+    const element = parts.splice(fromIdx * 2 + 1, 1)[0];
+
+    // Calculate insertion index in parts for before/after
+    const insertAt = pos === 'before' ? (toIdx * 2) : (toIdx * 2 + 2);
+    parts.splice(insertAt, 0, element);
+
+    const newContent = parts.join('');
+    updateLesson({ content: newContent });
+  };
+
+  const duplicateBlockById = (id: string) => {
+    if (!activeLesson) return;
+    const content = activeLesson.content || '';
+    const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
+    const idx = blocks.findIndex(b => b.id === id);
+    if (idx === -1) return;
+    const newBlock = genBlock(blocks[idx].html, blocks[idx].type);
+    // insert after
+    const parts: string[] = [];
+    let last = 0;
+    for (const b of blocks) {
+      parts.push(content.slice(last, b.index));
+      parts.push(content.slice(b.index, b.index + b.length));
+      last = b.index + b.length;
+    }
+    parts.push(content.slice(last));
+    parts.splice(idx * 2 + 2, 0, newBlock);
+    updateLesson({ content: parts.join('') });
+    showToast('Bloco duplicado');
+  };
+  
 
   const removeLesson = (moduleId: string, lessonId: string, parentLessonId?: string) => {
     const ok = window.confirm('Remover esta aula? Esta ação não pode ser desfeita.');
@@ -343,11 +635,11 @@ export default function AdminTrilhaBuilder() {
     // Remover no backend
     if (id) {
       if (parentLessonId) {
-        api.delete(`/api/trails/${trailId}/modules/${moduleId}/lessons/${parentLessonId}/sublessons/${lessonId}`)
-          .catch(err => console.error('Erro ao remover subaula:', err));
+        // Não chamar endpoint de remoção de subaula (não existe no backend). Persistir via PUT /api/trails/{id}.
+        console.warn('Backend não expõe endpoint para remover subaula; salve a trilha para persistir a remoção.');
       } else {
-        api.delete(`/api/trails/${trailId}/modules/${moduleId}/lessons/${lessonId}`)
-          .catch(err => console.error('Erro ao remover aula:', err));
+        // Não chamar endpoint de remoção de aula; usar PUT global.
+        console.warn('Backend não expõe endpoint para remover aula; salve a trilha para persistir a remoção.');
       }
     }
     showToast('Aula removida');
@@ -372,15 +664,10 @@ export default function AdminTrilhaBuilder() {
       })
     }));
     setIsDirty(true);
-    // Persistir rename no backend
+    // Backend não expõe endpoints para renomear itens individualmente; use PUT /api/trails/{id} (Salvar)
     if (id && activeModuleId) {
-      if (editingLessonParentId) {
-        api.put(`/api/trails/${trailId}/modules/${activeModuleId}/lessons/${editingLessonParentId}/sublessons/${editingLessonId}`, { title: editingLessonTitle })
-          .catch(err => console.error('Erro ao renomear subaula:', err));
-      } else {
-        api.put(`/api/trails/${trailId}/modules/${activeModuleId}/lessons/${editingLessonId}`, { title: editingLessonTitle })
-          .catch(err => console.error('Erro ao renomear aula:', err));
-      }
+      console.warn('Renomeio aplicado localmente. Salve a trilha para persistir o novo título no backend.');
+      showToast('Título atualizado localmente — salve a trilha para persistir');
     }
     setEditingLessonId(null);
     setEditingLessonTitle('');
@@ -465,6 +752,146 @@ export default function AdminTrilhaBuilder() {
     return blocks;
   };
 
+  const renderBlockList = () => {
+    const content = activeLesson?.content || '';
+    const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
+    if (blocks.length === 0) {
+      return <div className="text-sm text-slate-400">Nenhum bloco detectado.</div>;
+    }
+
+    return (
+      <div className="relative">
+        <div className="space-y-2">
+          {blocks.map((b: any) => (
+            <div key={b.id} className="relative">
+              <div
+                ref={(el) => { blockRefs.current[b.id] = el; }}
+                className={`group bg-white p-3 rounded border border-slate-100 relative ${dragPreview.type === 'block' && dragPreview.id === b.id ? 'opacity-80 shadow-lg' : ''}`}
+                draggable
+                onDragStart={(e) => { dragBlockIdRef.current = b.id; e.dataTransfer.effectAllowed = 'move'; }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  const el = blockRefs.current[b.id];
+                  const container = blocksAreaRef.current;
+                  if (el && container) {
+                    const rect = el.getBoundingClientRect();
+                    const containerRect = container.getBoundingClientRect();
+                    const relTop = rect.top - containerRect.top + container.scrollTop;
+                    const relLeft = rect.left - containerRect.left + container.scrollLeft;
+                    const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
+                    setDragPreview({ type: 'block', id: b.id, rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height }, pos, source: 'list' });
+                  } else {
+                    setDragPreview({ type: 'block', id: b.id, source: 'list' });
+                  }
+                }}
+                onDragLeave={() => { setDragPreview({ type: 'none' }); }}
+                onMouseEnter={(e) => {
+                  if (dragBlockIdRef.current) return;
+                  const el = blockRefs.current[b.id];
+                  const container = blocksAreaRef.current;
+                  if (el && container) {
+                    const rect = el.getBoundingClientRect();
+                    const containerRect = container.getBoundingClientRect();
+                    const relTop = rect.top - containerRect.top + container.scrollTop;
+                    const relLeft = rect.left - containerRect.left + container.scrollLeft;
+                    setDragPreview({ type: 'block', id: b.id, rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height } });
+                  } else {
+                    setDragPreview({ type: 'block', id: b.id });
+                  }
+                }}
+                onMouseMove={(e) => {
+                  if (dragBlockIdRef.current) return;
+                  const el = blockRefs.current[b.id];
+                  if (!el) return;
+                  const rect = el.getBoundingClientRect();
+                  const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
+                  setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === b.id ? prev : { type: 'block', id: b.id }), pos }));
+                }}
+                onMouseLeave={() => { if (!dragBlockIdRef.current) setDragPreview({ type: 'none' }); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const pos = dragPreview.pos || 'before';
+                  if (dragTitleRef.current && activeLesson && activeLesson.title) {
+                    const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
+                    const content = activeLesson.content || '';
+                    const parsed = parseBlocks(content).sort((a: any, b: any) => a.index - b.index);
+                    const idx = parsed.findIndex((x: any) => x.id === b.id);
+                    const parts: string[] = [];
+                    let last = 0;
+                    for (const bl of parsed) {
+                      parts.push(content.slice(last, bl.index));
+                      parts.push(content.slice(bl.index, bl.index + bl.length));
+                      last = bl.index + bl.length;
+                    }
+                    parts.push(content.slice(last));
+                    const insertAt = pos === 'before' ? (idx * 2) : (idx * 2 + 2);
+                    parts.splice(insertAt, 0, block);
+                    updateLesson({ content: parts.join(''), title: '' });
+                    dragTitleRef.current = false;
+                    setDragPreview({ type: 'none' });
+                    showToast('Título movido para o conteúdo');
+                    return;
+                  }
+                  const dragId = dragBlockIdRef.current;
+                  if (dragId && dragId !== b.id) reorderBlockTo(dragId, b.id, pos);
+                  dragBlockIdRef.current = null;
+                  setDragPreview({ type: 'none' });
+                }}
+              >
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white p-1 rounded shadow text-slate-400 border border-slate-100 cursor-grab opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="w-6 h-2 flex items-center justify-center gap-1">
+                    <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                    <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                    <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                  </div>
+                </div>
+                <div className="absolute top-2 right-2 flex gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }} className="p-1 bg-white border rounded text-slate-600">Editar</button>
+                  <button onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }} className="p-1 bg-white border rounded text-slate-600">Duplicar</button>
+                  <button onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }} className="p-1 bg-red-600 text-white rounded">Remover</button>
+                </div>
+                <div className="absolute top-2 left-2 z-10">
+                  <div className="bg-amber-100 text-amber-800 text-xs font-bold px-2 py-0.5 rounded">{b.type}</div>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-0" />
+                  <div className="text-sm font-bold text-slate-700">{b.type}</div>
+                  <div className="text-xs text-slate-400 line-clamp-3" dangerouslySetInnerHTML={{ __html: b.html }} />
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, -1); }} className="text-[11px] px-2 py-1 bg-white border rounded text-slate-600 hover:bg-slate-50">↑</button>
+                  <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, 1); }} className="text-[11px] px-2 py-1 bg-white border rounded text-slate-600 hover:bg-slate-50">↓</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* overlay for area (list) */}
+        {dragPreview.type === 'block' && dragPreview.rect && dragPreview.source === 'list' && (
+          <>
+            <div
+              className="pointer-events-none absolute rounded border-2 border-dashed border-faktory-blue bg-faktory-blue/8"
+              style={{ top: dragPreview.rect.top, left: dragPreview.rect.left, width: dragPreview.rect.width, height: dragPreview.rect.height }}
+            />
+            {/* insertion indicator line */}
+            <div
+              className="pointer-events-none absolute bg-faktory-blue"
+              style={{
+                top: (dragPreview.pos === 'after' ? (dragPreview.rect.top + dragPreview.rect.height - 2) : (dragPreview.rect.top - 2)),
+                left: dragPreview.rect.left,
+                width: dragPreview.rect.width,
+                height: 4,
+                borderRadius: 2,
+                opacity: 0.95
+              }}
+            />
+          </>
+        )}
+      </div>
+    );
+  };
+
   const removeBlockById = (id: string) => {
     if (!activeLesson) return;
     const content = activeLesson.content || '';
@@ -520,7 +947,7 @@ export default function AdminTrilhaBuilder() {
   const activeLesson = getActiveLesson();
 
   return (
-    <div className="fixed inset-0 top-14 left-64 bg-[#f4f7f9] flex flex-col overflow-hidden z-10">
+    <div className="fixed inset-0 bg-[#f4f7f9] flex flex-col overflow-hidden z-10" style={{ top: '3.5rem', left: 'var(--sidebar-width)', right: 0, bottom: 0 }}>
       {/* Top Bar - Editor Style */}
       <div className="h-14 bg-white border-b border-slate-200 flex items-center px-6 justify-between shrink-0">
         <div className="flex items-center gap-4">
@@ -612,17 +1039,18 @@ export default function AdminTrilhaBuilder() {
 
           <div className="flex-1 overflow-y-auto p-2 space-y-2">
             {trailData.modules.length === 0 ? (
-              <div className="p-4 bg-yellow-50 border border-yellow-100 rounded text-sm text-slate-700">
-                <div className="font-bold mb-2">Nenhuma etapa encontrada</div>
-                <div className="text-[13px] mb-3">Parece que você removeu o conteúdo. Deseja restaurar o template padrão Faktory One?</div>
-                <div className="flex gap-2">
-                  <button onClick={applyFaktoryOneTemplate} className="px-3 py-1 bg-faktory-blue text-white rounded text-xs font-bold">Restaurar Template</button>
-                  <button onClick={addModule} className="px-3 py-1 border rounded text-xs">Criar etapa vazia</button>
+                <div className="p-4 bg-yellow-50 border border-yellow-100 rounded text-sm text-slate-700">
+                  <div className="font-bold mb-2">Nenhuma etapa encontrada</div>
+                  <div className="text-[13px] mb-3">Use o botão "Adicionar etapa" acima para criar uma nova etapa.</div>
                 </div>
-              </div>
             ) : (
             trailData.modules.map((module, mIndex) => (
-              <div key={module.id} className="space-y-1">
+              <div key={module.id} className="space-y-1"
+                draggable
+                onDragStart={(e) => { dragModuleIdRef.current = module.id; e.dataTransfer.effectAllowed = 'move'; }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); const dragId = dragModuleIdRef.current; if (dragId && dragId !== module.id) reorderModule(dragId, module.id); dragModuleIdRef.current = null; }}
+              >
                 <div 
                   className={cn(
                     "flex items-center justify-between p-2 rounded-md cursor-pointer group transition-all",
@@ -635,34 +1063,55 @@ export default function AdminTrilhaBuilder() {
                       <ChevronDown size={14} style={{ transform: expandedModules[module.id] ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform .12s' }} />
                     </button>
                     <div className="w-1 h-4 bg-slate-200 rounded-full group-hover:bg-faktory-blue transition-all"></div>
+                    <div className="text-xs font-bold text-slate-400 mr-2">{mIndex + 1}.</div>
                     <input 
                       className="text-xs font-bold text-slate-600 bg-transparent outline-none w-full"
                       value={module.title}
                       onChange={(e) => updateModuleTitle(module.id, e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); } }}
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); addLesson(module.id); }}
-                      title="Adicionar aula"
-                      className="text-slate-400 hover:text-faktory-blue p-1 rounded"
-                    >
-                      <Plus size={14} />
-                    </button>
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); removeModule(module.id); }}
-                      title="Remover etapa"
-                      className="text-slate-400 hover:text-red-500 p-1 rounded"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); addLesson(module.id); }}
+                        title="Adicionar aula"
+                        className="text-slate-400 hover:text-faktory-blue p-1 rounded"
+                      >
+                        <Plus size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); moveModule(module.id, -1); }}
+                        title="Mover etapa para cima"
+                        className="text-slate-400 hover:text-faktory-blue p-1 rounded"
+                      >
+                        <ChevronUp size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); moveModule(module.id, 1); }}
+                        title="Mover etapa para baixo"
+                        className="text-slate-400 hover:text-faktory-blue p-1 rounded"
+                      >
+                        <ChevronDown size={14} />
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); removeModule(module.id); }}
+                        title="Remover etapa"
+                        className="text-slate-400 hover:text-red-500 p-1 rounded"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                   </div>
                 </div>
 
-                {expandedModules[module.id] && (
+                  {expandedModules[module.id] && (
                 <div className="pl-6 space-y-1">
                   {module.lessons.map((lesson, lIndex) => (
-                    <div key={lesson.id} className="space-y-1">
+                    <div key={lesson.id} className="space-y-1"
+                      draggable
+                      onDragStart={(e) => { dragLessonIdRef.current = lesson.id; e.dataTransfer.effectAllowed = 'move'; }}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => { e.preventDefault(); const dragId = dragLessonIdRef.current; if (dragId && dragId !== lesson.id) reorderLesson(module.id, dragId, lesson.id); dragLessonIdRef.current = null; }}
+                    >
                       <div 
                         className={cn(
                           "flex items-center justify-between p-2 rounded-md cursor-pointer text-[11px] transition-all",
@@ -681,15 +1130,18 @@ export default function AdminTrilhaBuilder() {
                               className="w-full text-sm px-2 py-1 border border-slate-200 rounded"
                               value={editingLessonTitle}
                               onChange={(e) => setEditingLessonTitle(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveEditLesson(); } }}
                             />
                             <button onClick={(e) => { e.stopPropagation(); saveEditLesson(); }} className="px-2 py-1 bg-faktory-blue text-white rounded text-xs">Salvar</button>
                             <button onClick={(e) => { e.stopPropagation(); cancelEditLesson(); }} className="px-2 py-1 border rounded text-xs">Cancelar</button>
                           </div>
                           ) : (
                           <div className="flex items-center gap-2 w-full justify-between">
-                            <span className="flex-1">{mIndex + 1}.{lIndex + 1} - {lesson.title}</span>
+                            <span className="flex-1" onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(lesson.id, lesson.title); }}>{mIndex + 1}.{lIndex + 1} - {lesson.title}</span>
                             <div className="flex items-center gap-2">
                               <button onClick={(e) => { e.stopPropagation(); addLesson(module.id, lesson.id); }} title="Adicionar subaula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><Plus size={14} /></button>
+                              <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, lesson.id, -1); }} title="Mover aula para cima" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronUp size={14} /></button>
+                              <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, lesson.id, 1); }} title="Mover aula para baixo" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={14} /></button>
                               <button onClick={(e) => { e.stopPropagation(); startEditLesson(lesson.id, lesson.title); }} title="Renomear aula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={14} style={{ transform: 'rotate(-90deg)' }} /></button>
                               <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, lesson.id); }} title="Remover aula" className="text-slate-300 hover:text-red-500 p-1 rounded"><Trash2 size={14} /></button>
                             </div>
@@ -703,13 +1155,29 @@ export default function AdminTrilhaBuilder() {
                           "flex items-center justify-between p-1 rounded cursor-pointer text-[11px] transition-all ml-4",
                           activeSublessonId === sub.id ? "bg-blue-50 text-faktory-blue font-semibold" : "text-slate-400 hover:bg-slate-50"
                         )} onClick={() => { setActiveModuleId(module.id); setActiveLessonId(lesson.id); setActiveSublessonId(sub.id); }}>
-                          <div className="flex items-center gap-2 w-full justify-between">
-                            <span className="flex-1 text-sm text-slate-500">{mIndex + 1}.{lIndex + 1}.{sIndex + 1} - {sub.title}</span>
-                            <div className="flex items-center gap-2">
-                              <button onClick={(e) => { e.stopPropagation(); startEditLesson(sub.id, sub.title, lesson.id); }} title="Renomear subaula" aria-label="Renomear subaula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={12} style={{ transform: 'rotate(-90deg)' }} /></button>
-                              <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, sub.id, lesson.id); }} title="Remover subaula" aria-label="Remover subaula" className="text-slate-400 hover:text-red-500 p-1 rounded"><Trash2 size={12} /></button>
+                          {editingLessonId === sub.id ? (
+                            <div className="flex items-center gap-2 w-full">
+                              <input
+                                autoFocus
+                                className="w-full text-sm px-2 py-1 border border-slate-200 rounded"
+                                value={editingLessonTitle}
+                                onChange={(e) => setEditingLessonTitle(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveEditLesson(); } }}
+                              />
+                              <button onClick={(e) => { e.stopPropagation(); saveEditLesson(); }} className="px-2 py-1 bg-faktory-blue text-white rounded text-xs">Salvar</button>
+                              <button onClick={(e) => { e.stopPropagation(); cancelEditLesson(); }} className="px-2 py-1 border rounded text-xs">Cancelar</button>
                             </div>
-                          </div>
+                          ) : (
+                            <div className="flex items-center gap-2 w-full justify-between">
+                              <span className="flex-1 text-sm text-slate-500" onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(sub.id, sub.title, lesson.id); }}>{mIndex + 1}.{lIndex + 1}.{sIndex + 1} - {sub.title}</span>
+                              <div className="flex items-center gap-2">
+                                  <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, sub.id, -1, lesson.id); }} title="Mover subaula para cima" aria-label="Mover subaula para cima" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronUp size={12} /></button>
+                                  <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, sub.id, 1, lesson.id); }} title="Mover subaula para baixo" aria-label="Mover subaula para baixo" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={12} /></button>
+                                  <button onClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(sub.id, sub.title, lesson.id); }} title="Renomear subaula" aria-label="Renomear subaula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={12} style={{ transform: 'rotate(-90deg)' }} /></button>
+                                  <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, sub.id, lesson.id); }} title="Remover subaula" aria-label="Remover subaula" className="text-slate-400 hover:text-red-500 p-1 rounded"><Trash2 size={12} /></button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -732,69 +1200,182 @@ export default function AdminTrilhaBuilder() {
         <main className="flex-1 bg-[#f4f7f9] overflow-y-auto p-10 relative">
           <div className="max-w-4xl mx-auto bg-white shadow-2xl rounded-sm min-h-[800px] flex flex-col border border-slate-200">
             {/* Preview Header */}
-            <div className="p-10 flex flex-col items-center border-b border-slate-50">
-              <div className="w-64 mb-10">
-                <img 
-                  src="https://faktorysoftwares.com.br/wp-content/uploads/2023/10/logo-faktory-softwares.png" 
-                  alt="Faktory Logo" 
+                  <div className="p-10 flex flex-col items-center border-b border-slate-50"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => { e.preventDefault(); if (dragVideoRef.current) { setVideoPosition('title-top'); dragVideoRef.current = false; showToast('Vídeo movido acima do título'); } }}
+                  >
+              <div className="w-64 mb-10"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  if (dragVideoRef.current || dragBlockIdRef.current) setDragPreview({ type: 'title' });
+                }}
+                onDragLeave={() => { setDragPreview({ type: 'none' }); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragVideoRef.current) { setVideoPosition('title-top'); dragVideoRef.current = false; showToast('Vídeo movido acima do título'); }
+                  if (dragBlockIdRef.current) { const dragId = dragBlockIdRef.current; const blocks = parseBlocks(activeLesson?.content || ''); if (blocks.length) reorderBlock(dragId, blocks[0].id); dragBlockIdRef.current = null; }
+                  setDragPreview({ type: 'none' });
+                }}
+              >
+                <img
+                  src="/logo.png"
+                  alt="Faktory Logo"
                   className="w-full h-auto opacity-80"
                   referrerPolicy="no-referrer"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/logo-faktory.svg'; }}
                 />
                 <p className="text-[10px] text-center font-bold text-slate-400 uppercase tracking-widest mt-2">Uma empresa Esquadgroup</p>
               </div>
 
+              {activeLesson && activeLesson.videoPosition === 'title-top' && (
+                <div className="w-full mb-6">
+                  <div className="w-full">
+                    {/* preview when videoPosition === title-top */}
+                    {dragPreview.type === 'title' && (dragVideoRef.current || dragBlockIdRef.current) ? (
+                      <div className="p-4 mb-4 border-2 border-dashed border-faktory-blue rounded bg-white/60 text-center">Pré-visualização de inserção</div>
+                    ) : (
+                      <div 
+                        onClick={() => setShowVideoModal(true)}
+                        onMouseEnter={(e) => {
+                          const el = e.currentTarget as HTMLDivElement;
+                          const container = previewAreaRef.current || blocksAreaRef.current || document.body;
+                          const rect = el.getBoundingClientRect();
+                          const containerRect = (container as HTMLElement).getBoundingClientRect ? (container as HTMLElement).getBoundingClientRect() : { top: 0, left: 0 };
+                          const relTop = rect.top - containerRect.top + (container as HTMLElement).scrollTop || 0;
+                          const relLeft = rect.left - containerRect.left + (container as HTMLElement).scrollLeft || 0;
+                          setDragPreview({ type: 'block', id: 'video-main', rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height }, source: 'preview' });
+                        }}
+                        onMouseMove={(e) => {
+                          const el = e.currentTarget as HTMLDivElement;
+                          const rect = el.getBoundingClientRect();
+                          const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
+                          setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === 'video-main' ? prev : { type: 'block', id: 'video-main' }), pos, source: 'preview' }));
+                        }}
+                        onMouseLeave={() => { if (!dragVideoRef.current) setDragPreview({ type: 'none' }); }}
+                        className="aspect-video bg-slate-900 rounded-sm flex flex-col items-center justify-center text-white relative group overflow-hidden cursor-pointer border-2 border-transparent hover:border-faktory-blue transition-all"
+                      >
+                        {activeLesson.videoUrl ? (
+                          <iframe src={getEmbedUrl(activeLesson.videoUrl)} className="w-full h-full pointer-events-none" title="Video Preview" />
+                        ) : (
+                          <>
+                            <Video size={48} className="text-slate-700 mb-4" />
+                            <p className="text-sm font-bold text-slate-500">Clique para configurar o vídeo</p>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {activeLesson ? (
-                <input 
-                  className="text-3xl font-bold text-slate-700 text-center w-full outline-none focus:border-b-2 border-faktory-blue pb-2"
-                  value={activeLesson.title}
-                  onChange={(e) => updateLesson({ title: e.target.value })}
-                  placeholder="Título da Aula"
-                />
+                <div
+                  draggable
+                  onDragStart={(e) => { dragTitleRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragEnd={() => { dragTitleRef.current = false; }}
+                >
+                  <input 
+                    className="text-3xl font-bold text-slate-700 text-center w-full outline-none focus:border-b-2 border-faktory-blue pb-2"
+                    value={activeLesson.title}
+                    onChange={(e) => updateLesson({ title: e.target.value })}
+                    placeholder="Título da Aula"
+                  />
+                </div>
               ) : (
                 <div className="text-slate-300 italic">Selecione ou crie uma aula para começar</div>
               )}
             </div>
 
             {/* Preview Content */}
-            <div className="flex-1 p-10 space-y-8">
+              <div className="flex-1 p-10 space-y-8"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  if (dragVideoRef.current || dragBlockIdRef.current) setDragPreview({ type: 'content' });
+                }}
+                onDragLeave={() => { setDragPreview({ type: 'none' }); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragVideoRef.current) { setVideoPosition('top'); dragVideoRef.current = false; showToast('Vídeo movido acima do conteúdo'); }
+                  if (dragTitleRef.current && activeLesson && activeLesson.title) {
+                    // convert title to block at top of content
+                    const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
+                    updateLesson({ content: block + '\n' + (activeLesson.content || ''), title: '' });
+                    dragTitleRef.current = false;
+                    showToast('Título movido para o conteúdo');
+                  }
+                  if (dragBlockIdRef.current) { const dragId = dragBlockIdRef.current; const blocks = parseBlocks(activeLesson?.content || ''); if (blocks.length) reorderBlock(dragId, blocks[0].id); dragBlockIdRef.current = null; }
+                  setDragPreview({ type: 'none' });
+                }}
+              >
               {activeLesson && (
                 <>
                   {/* Video Placeholder */}
-                  <div 
-                    onClick={() => setShowVideoModal(true)}
-                    className="aspect-video bg-slate-900 rounded-sm flex flex-col items-center justify-center text-white relative group overflow-hidden cursor-pointer border-2 border-transparent hover:border-faktory-blue transition-all"
-                  >
-                    {activeLesson.videoUrl ? (
-                      <div className="w-full h-full relative">
-                        <iframe 
-                          src={getEmbedUrl(activeLesson.videoUrl)} 
-                          className="w-full h-full pointer-events-none"
-                          title="Video Preview"
-                        />
-                        <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-all flex items-center justify-center">
-                          <div className="bg-white/10 backdrop-blur-md p-4 rounded-full border border-white/20 opacity-0 group-hover:opacity-100 transition-all">
-                            <Settings className="text-white" size={32} />
+                  {(activeLesson.videoPosition !== 'title-top' && activeLesson.videoPosition !== 'bottom') && (
+                      <div 
+                        draggable
+                        onDragStart={(e) => { dragVideoRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
+                        onDragEnd={() => { dragVideoRef.current = false; }}
+                        onClick={() => setShowVideoModal(true)}
+                        onMouseEnter={(e) => {
+                          const el = e.currentTarget as HTMLDivElement;
+                          const container = previewAreaRef.current || blocksAreaRef.current || document.body;
+                          const rect = el.getBoundingClientRect();
+                          const containerRect = (container as HTMLElement).getBoundingClientRect ? (container as HTMLElement).getBoundingClientRect() : { top: 0, left: 0 };
+                          const relTop = rect.top - containerRect.top + (container as HTMLElement).scrollTop || 0;
+                          const relLeft = rect.left - containerRect.left + (container as HTMLElement).scrollLeft || 0;
+                          setDragPreview({ type: 'block', id: 'video-main', rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height }, source: 'preview' });
+                        }}
+                        onMouseMove={(e) => {
+                          const el = e.currentTarget as HTMLDivElement;
+                          const rect = el.getBoundingClientRect();
+                          const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
+                          setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === 'video-main' ? prev : { type: 'block', id: 'video-main' }), pos, source: 'preview' }));
+                        }}
+                        onMouseLeave={() => { if (!dragVideoRef.current) setDragPreview({ type: 'none' }); }}
+                        className="aspect-video bg-slate-900 rounded-sm flex flex-col items-center justify-center text-white relative group overflow-hidden cursor-pointer border-2 border-transparent hover:border-faktory-blue transition-all"
+                      >
+                        {activeLesson.videoUrl ? (
+                          <div className="w-full h-full relative">
+                            <iframe 
+                              src={getEmbedUrl(activeLesson.videoUrl)} 
+                              className="w-full h-full pointer-events-none"
+                              title="Video Preview"
+                            />
+                            <div className="absolute top-3 right-3 flex gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={(e) => { e.stopPropagation(); setVideoPosition('title-top'); }} title="Acima do título" className="bg-white/10 text-white p-2 rounded"> <ChevronUp size={14} /> </button>
+                              <button onClick={(e) => { e.stopPropagation(); setVideoPosition('top'); }} title="Acima do conteúdo" className="bg-white/10 text-white p-2 rounded"> <ChevronUp size={14} /> </button>
+                              <button onClick={(e) => { e.stopPropagation(); setVideoPosition('bottom'); }} title="Abaixo do conteúdo" className="bg-white/10 text-white p-2 rounded"> <ChevronDown size={14} /> </button>
+                              <button onClick={(e) => { e.stopPropagation(); insertVideoAsBlock(); }} title="Inserir como bloco" className="bg-white/10 text-white p-2 rounded"> <Layers size={14} /> </button>
+                              <button onClick={(e) => { e.stopPropagation(); updateLesson({ videoUrl: '' }); showToast('Vídeo removido'); }} title="Remover vídeo" className="bg-white/10 text-white p-2 rounded"> <Trash2 size={14} /> </button>
+                            </div>
+                            <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-all flex items-center justify-center">
+                              <div className="bg-white/10 backdrop-blur-md p-4 rounded-full border border-white/20 opacity-0 group-hover:opacity-100 transition-all">
+                                <Settings className="text-white" size={32} />
+                              </div>
+                            </div>
+                            <div className="absolute bottom-4 left-4 flex gap-2">
+                              {activeLesson.videoOptions?.subtitlesUrl && (
+                                <span className="bg-faktory-blue text-white text-[10px] font-bold px-2 py-1 rounded">Legenda Ativa</span>
+                              )}
+                              {activeLesson.videoOptions?.autoplay && (
+                                <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded">Autoplay</span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                        <div className="absolute bottom-4 left-4 flex gap-2">
-                          {activeLesson.videoOptions?.subtitlesUrl && (
-                            <span className="bg-faktory-blue text-white text-[10px] font-bold px-2 py-1 rounded">Legenda Ativa</span>
-                          )}
-                          {activeLesson.videoOptions?.autoplay && (
-                            <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded">Autoplay</span>
-                          )}
-                        </div>
+                        ) : (
+                          <>
+                            <Video size={48} className="text-slate-700 mb-4" />
+                            <p className="text-sm font-bold text-slate-500">Clique para configurar o vídeo</p>
+                          </>
+                        )}
                       </div>
-                    ) : (
-                      <>
-                        <Video size={48} className="text-slate-700 mb-4" />
-                        <p className="text-sm font-bold text-slate-500">Clique para configurar o vídeo</p>
-                      </>
-                    )}
-                  </div>
+                  )}
 
                   {/* HTML Content */}
                   <div className="prose prose-slate max-w-none">
+                    {dragPreview.type === 'content' && (dragVideoRef.current || dragBlockIdRef.current) && (
+                      <div className="mb-4 p-4 border-2 border-dashed border-faktory-blue rounded bg-white/60 text-center">Pré-visualização de inserção na área de conteúdo</div>
+                    )}
                     <textarea 
                       className="w-full min-h-[200px] p-4 bg-slate-50 border border-slate-100 rounded-md text-sm outline-none focus:ring-1 focus:ring-faktory-blue"
                       value={activeLesson.content}
@@ -803,26 +1384,131 @@ export default function AdminTrilhaBuilder() {
                     />
 
                     {/* Blocks quick list */}
-                    <div className="mt-4 p-3 bg-slate-50 border border-slate-100 rounded-md">
+                    <div ref={blocksAreaRef} className="mt-4 p-3 bg-slate-50 border border-slate-100 rounded-md relative">
                       <h4 className="text-xs font-bold text-slate-600 mb-2">Blocos da aula</h4>
-                      {parseBlocks(activeLesson.content || '').length === 0 ? (
-                        <div className="text-sm text-slate-400">Nenhum bloco detectado.</div>
-                      ) : (
-                        <div className="space-y-2">
-                          {parseBlocks(activeLesson.content || '').map((b: any) => (
-                            <div key={b.id} className="flex items-center justify-between bg-white p-2 rounded border border-slate-100">
-                              <div>
-                                <div className="text-sm font-bold text-slate-700">{b.type}</div>
-                                <div className="text-xs text-slate-400 line-clamp-2" dangerouslySetInnerHTML={{ __html: b.html }} />
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <button onClick={() => editBlockById(b.id)} className="text-[11px] px-2 py-1 bg-white border rounded text-slate-600 hover:bg-slate-50">Editar</button>
-                                <button onClick={() => removeBlockById(b.id)} className="text-[11px] px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700">Remover</button>
+                      {renderBlockList()}
+                    </div>
+
+                    {/* Live Preview - render blocks as they would appear on the page */}
+                    <div className="mt-6">
+                      <h4 className="text-sm font-bold text-slate-700 mb-2">Pré-visualização ao vivo</h4>
+                      <div ref={previewAreaRef} className="bg-white border border-slate-100 rounded-md p-4 space-y-4 relative">
+                        {parseBlocks(activeLesson?.content || '').sort((a,b) => a.index - b.index).map((b: any) => (
+                          <div
+                            key={b.id}
+                            ref={(el) => { blockRefs.current[b.id] = el; }}
+                            className={`group relative p-4 rounded ${dragPreview.type === 'block' && dragPreview.id === b.id ? 'shadow-lg' : 'border'} bg-white`}
+                            draggable
+                            onDragStart={(e) => { dragBlockIdRef.current = b.id; e.dataTransfer.effectAllowed = 'move'; }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              const el = blockRefs.current[b.id];
+                              const container = blocksAreaRef.current;
+                              if (el && container) {
+                                const rect = el.getBoundingClientRect();
+                                const containerRect = container.getBoundingClientRect();
+                                const relTop = rect.top - containerRect.top + container.scrollTop;
+                                const relLeft = rect.left - containerRect.left + container.scrollLeft;
+                                const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
+                                setDragPreview({ type: 'block', id: b.id, rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height }, pos, source: 'preview' });
+                              } else {
+                                setDragPreview({ type: 'block', id: b.id, source: 'preview' });
+                              }
+                            }}
+                            onDragLeave={() => setDragPreview({ type: 'none' })}
+                            onMouseEnter={(e) => {
+                              if (dragBlockIdRef.current) return;
+                              const el = blockRefs.current[b.id];
+                              const container = blocksAreaRef.current;
+                              if (el && container) {
+                                const rect = el.getBoundingClientRect();
+                                const containerRect = container.getBoundingClientRect();
+                                const relTop = rect.top - containerRect.top + container.scrollTop;
+                                const relLeft = rect.left - containerRect.left + container.scrollLeft;
+                                setDragPreview({ type: 'block', id: b.id, rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height } });
+                              } else {
+                                setDragPreview({ type: 'block', id: b.id });
+                              }
+                            }}
+                            onMouseMove={(e) => {
+                              if (dragBlockIdRef.current) return;
+                              const el = blockRefs.current[b.id];
+                              if (!el) return;
+                              const rect = el.getBoundingClientRect();
+                              const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
+                              setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === b.id ? prev : { type: 'block', id: b.id }), pos }));
+                            }}
+                            onMouseLeave={() => { if (!dragBlockIdRef.current) setDragPreview({ type: 'none' }); }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const pos = dragPreview.pos || 'before';
+                              const dragId = dragBlockIdRef.current;
+                              if (dragTitleRef.current && activeLesson && activeLesson.title) {
+                                const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
+                                const content = activeLesson.content || '';
+                                const parsed = parseBlocks(content).sort((a: any, b: any) => a.index - b.index);
+                                const idx = parsed.findIndex((x: any) => x.id === b.id);
+                                const parts: string[] = [];
+                                let last = 0;
+                                for (const bl of parsed) {
+                                  parts.push(content.slice(last, bl.index));
+                                  parts.push(content.slice(bl.index, bl.index + bl.length));
+                                  last = bl.index + bl.length;
+                                }
+                                parts.push(content.slice(last));
+                                const insertAt = pos === 'before' ? (idx * 2) : (idx * 2 + 2);
+                                parts.splice(insertAt, 0, block);
+                                updateLesson({ content: parts.join(''), title: '' });
+                                dragTitleRef.current = false;
+                                setDragPreview({ type: 'none' });
+                                showToast('Título movido para o conteúdo');
+                                return;
+                              }
+                              if (dragId && dragId !== b.id) reorderBlockTo(dragId, b.id, pos);
+                              dragBlockIdRef.current = null;
+                              setDragPreview({ type: 'none' });
+                            }}
+                          >
+                            <div className="absolute top-2 right-2 flex gap-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }} className="px-2 py-1 bg-white border rounded text-xs">Editar</button>
+                              <button onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }} className="px-2 py-1 bg-white border rounded text-xs">Duplicar</button>
+                              <button onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }} className="px-2 py-1 bg-red-600 text-white rounded text-xs">Remover</button>
+                            </div>
+                            <div className="absolute top-2 left-2 z-20">
+                              <div className="bg-amber-100 text-amber-800 text-xs font-bold px-2 py-0.5 rounded">{b.type}</div>
+                            </div>
+                            <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white p-1 rounded shadow text-slate-400 border border-slate-100 cursor-grab opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                              <div className="w-6 h-2 flex items-center justify-center gap-1">
+                                <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                                <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                                <span className="w-1 h-1 bg-slate-300 rounded-full" />
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      )}
+                            <div className="absolute inset-0 z-10" />
+                            <div dangerouslySetInnerHTML={{ __html: b.html }} />
+                          </div>
+                        ))}
+
+                        {dragPreview.type === 'block' && dragPreview.rect && dragPreview.source === 'preview' && (
+                          <>
+                            <div
+                              className="pointer-events-none absolute rounded border-2 border-dashed border-faktory-blue bg-faktory-blue/8"
+                              style={{ top: dragPreview.rect.top, left: dragPreview.rect.left, width: dragPreview.rect.width, height: dragPreview.rect.height }}
+                            />
+                            <div
+                              className="pointer-events-none absolute bg-faktory-blue"
+                              style={{
+                                top: (dragPreview.pos === 'after' ? (dragPreview.rect.top + dragPreview.rect.height - 2) : (dragPreview.rect.top - 2)),
+                                left: dragPreview.rect.left,
+                                width: dragPreview.rect.width,
+                                height: 4,
+                                borderRadius: 2,
+                                opacity: 0.95
+                              }}
+                            />
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -896,7 +1582,10 @@ export default function AdminTrilhaBuilder() {
                 key={idx}
                 onClick={() => {
                   // insert or open component depending on type
-                  if (!activeLesson) return;
+                  if (!activeLesson) {
+                    showToast('Selecione uma aula antes de inserir componentes');
+                    return;
+                  }
                   const label = comp.label;
                   if (label.includes('Vídeo')) {
                     setShowVideoModal(true);
@@ -1101,6 +1790,13 @@ export default function AdminTrilhaBuilder() {
                   className="px-4 py-2 bg-red-600 text-white rounded font-bold text-sm hover:bg-red-700 transition-all"
                 >
                   Remover Vídeo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => insertVideoAsBlock()}
+                  className="ml-3 px-4 py-2 bg-white border rounded font-medium text-sm hover:bg-slate-50 transition-all"
+                >
+                  Inserir vídeo como bloco
                 </button>
                 <div>
                   <button 
