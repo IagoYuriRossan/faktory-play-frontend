@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
 import { LayoutDashboard, Users, BookOpen, BarChart3, LogOut, Settings, ChevronDown, ChevronLeft, ChevronRight, Search, Building2, Layers, Mail, FileText } from 'lucide-react';
@@ -15,6 +15,30 @@ export default function LayoutAdmin() {
   };
 
   const [openMenus, setOpenMenus] = useState<string[]>(['gestao', 'atendimento', 'ativos']);
+  const [collapsed, setCollapsed] = useState(false);
+  const collapseTimerRef = useRef<number | null>(null);
+
+  const onSidebarMouseEnter = () => {
+    if (collapseTimerRef.current) window.clearTimeout(collapseTimerRef.current);
+    setCollapsed(false);
+  };
+
+  const onSidebarMouseLeave = () => {
+    if (collapseTimerRef.current) window.clearTimeout(collapseTimerRef.current);
+    // small delay so it doesn't flicker when moving between items
+    collapseTimerRef.current = window.setTimeout(() => setCollapsed(true), 350);
+  };
+
+  useEffect(() => {
+    return () => { if (collapseTimerRef.current) window.clearTimeout(collapseTimerRef.current); };
+  }, []);
+
+  // expose sidebar width as CSS variable so pages can adjust (e.g. editor left offset)
+  useEffect(() => {
+    const width = collapsed ? '4rem' : '16rem';
+    document.documentElement.style.setProperty('--sidebar-width', width);
+    return () => {};
+  }, [collapsed]);
 
   const toggleMenu = (menu: string) => {
     setOpenMenus(prev => 
@@ -81,18 +105,24 @@ export default function LayoutAdmin() {
   return (
     <div className="flex h-screen bg-[#f4f7f9]">
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col shadow-sm">
+      <aside onMouseEnter={onSidebarMouseEnter} onMouseLeave={onSidebarMouseLeave} className={cn((collapsed ? 'w-16' : 'w-64'), 'bg-white border-r border-gray-200 flex flex-col shadow-sm transition-all')}>
         <div className="p-4 flex items-center justify-between border-b border-gray-100">
-          <div className="flex flex-col">
-            <div className="flex items-end gap-1">
-              <div className="w-6 h-6 bg-gradient-to-br from-faktory-blue to-faktory-yellow rounded flex items-center justify-center text-white font-bold text-xs">F</div>
-              <span className="text-lg font-bold text-[#4a5568]">Faktory</span>
-            </div>
-            <span className="text-[8px] text-faktory-yellow font-bold self-end -mt-0.5">Play ▶</span>
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-gradient-to-br from-faktory-blue to-faktory-yellow rounded flex items-center justify-center text-white font-bold text-xs">F</div>
+            {!collapsed && (
+              <div className="flex flex-col">
+                <div className="flex items-end gap-1">
+                  <span className="text-lg font-bold text-[#4a5568]">Faktory</span>
+                </div>
+                <span className="text-[8px] text-faktory-yellow font-bold self-end -mt-0.5">Play ▶</span>
+              </div>
+            )}
           </div>
-          <button className="text-gray-300 hover:text-gray-500">
-            <ChevronLeft size={16} />
-          </button>
+          {!collapsed && (
+            <button className="text-gray-300 hover:text-gray-500">
+              <ChevronLeft size={16} />
+            </button>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto py-4">
@@ -110,15 +140,17 @@ export default function LayoutAdmin() {
                     >
                       <div className="flex items-center gap-3">
                         <group.icon size={16} className="text-slate-400" />
-                        <span>{group.label}</span>
+                        {!collapsed && <span>{group.label}</span>}
                       </div>
-                      <ChevronDown 
-                        size={14} 
-                        className={cn("text-gray-300 transition-transform", openMenus.includes(group.id) ? "rotate-180" : "")} 
-                      />
+                      {!collapsed && (
+                        <ChevronDown 
+                          size={14} 
+                          className={cn("text-gray-300 transition-transform", openMenus.includes(group.id) ? "rotate-180" : "")} 
+                        />
+                      )}
                     </button>
                     
-                    {openMenus.includes(group.id) && (
+                    {!collapsed && openMenus.includes(group.id) && (
                       <div className="mt-1 ml-4 space-y-0.5 border-l-2 border-slate-100">
                         {group.items.map((item) => (
                           <Link
@@ -153,9 +185,9 @@ export default function LayoutAdmin() {
                       >
                         <div className="flex items-center gap-3">
                           <item.icon size={16} className={cn(item.color, "opacity-80")} />
-                          <span>{item.label}</span>
+                          {!collapsed && <span>{item.label}</span>}
                         </div>
-                        {item.hasArrow && <ChevronRight size={14} className="text-gray-300" />}
+                        {!collapsed && item.hasArrow && <ChevronRight size={14} className="text-gray-300" />}
                       </Link>
                     ))}
                   </div>
