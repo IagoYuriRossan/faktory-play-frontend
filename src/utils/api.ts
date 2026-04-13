@@ -55,15 +55,33 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     throw new ApiError(0, path, msg);
   }
 
+  // Ler corpo como texto para melhor debug e tentar parsear JSON
+  const text = await res.text().catch(() => '');
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (e) {
+    data = text;
+  }
+
+  // Debug temporário: registrar requisições/respostas importantes
+  const API_DEBUG = true;
+  if (API_DEBUG) {
+    try {
+      console.debug('[API DEBUG] ', { method, path, requestBody: body, status: res.status, responseBody: data });
+    } catch (e) {
+      // ignore logging errors
+    }
+  }
+
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const serverMessage = err.message || err.error || undefined;
+    const serverMessage = data && typeof data === 'object' ? data.message || data.error : undefined;
     const apiError = new ApiError(res.status, `${method} ${path}`, serverMessage);
-    console.error(apiError.message, err);
+    console.error(apiError.message, data);
     throw apiError;
   }
 
-  return res.json();
+  return data;
 }
 
 export const api = {
