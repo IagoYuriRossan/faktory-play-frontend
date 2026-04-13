@@ -41,6 +41,8 @@ export interface Lesson {
     loop?: boolean;
     controls?: boolean;
   };
+  // position of the lesson video relative to the content/title
+  videoPosition?: 'title-top' | 'top' | 'bottom';
   sublessons?: Lesson[];
 }
 
