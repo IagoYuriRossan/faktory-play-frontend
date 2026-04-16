@@ -2,11 +2,11 @@ import { useEffect, useState } from 'react';
 import { Plus, Search, MoreVertical, BookOpen, Loader2 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { api } from '../../utils/api';
-import { Trail } from '../../@types';
+import { TrailSummary } from '../../@types';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
 
 export default function AdminTrilhas() {
-  const [trails, setTrails] = useState<Trail[]>([]);
+  const [trails, setTrails] = useState<TrailSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -22,7 +22,7 @@ export default function AdminTrilhas() {
   const fetchTrails = async () => {
     setLoading(true);
     try {
-      const trailsData = await api.get<Trail[]>('/api/trails');
+      const trailsData = await api.get<TrailSummary[]>('/api/trails');
       setTrails(trailsData);
     } catch (error) {
       console.error('Error fetching trails:', error);
@@ -100,19 +100,19 @@ export default function AdminTrilhas() {
                         {user?.role === 'superadmin' && (
                           <button
                             className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-slate-50"
-                            onClick={async () => {
+                            onClick={() => {
                               const confirmDelete = window.confirm('Remover trilha? Esta ação é irreversível.');
                               if (!confirmDelete) return;
-                              try {
-                                await api.delete(`/api/trails/${trail.id}`);
-                                await fetchTrails();
-                                setOpenMenuId(null);
-                                showToast('success', 'Trilha removida com sucesso.');
-                              } catch (err: any) {
+                              // Optimistic: remove from list immediately
+                              setTrails(prev => prev.filter(t => t.id !== trail.id));
+                              setOpenMenuId(null);
+                              showToast('success', 'Trilha removida.');
+                              // Delete in background; restore on failure
+                              api.delete(`/api/trails/${trail.id}`).catch((err: any) => {
                                 console.error('Erro removendo trilha:', err);
-                                const msg = err?.message || 'Erro ao remover trilha.';
-                                showToast('error', msg);
-                              }
+                                showToast('error', 'Erro ao remover trilha — recarregando lista.');
+                                fetchTrails();
+                              });
                             }}
                           >
                             Remover
@@ -128,7 +128,7 @@ export default function AdminTrilhas() {
                   
                   <div className="flex items-center justify-between pt-4 border-t border-slate-50">
                     <span className="text-[10px] font-bold text-slate-400 uppercase">
-                      {trail.modules.length} Módulos
+                      {trail.moduleCount} Módulos
                     </span>
                     <Link
                       to={`/admin/trilhas/${trail.id}`}
