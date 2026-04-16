@@ -60,6 +60,16 @@ export interface Trail {
   modules: Module[];
 }
 
+/** Shape retornado por GET /api/trails (listagem — sem módulos/aulas). */
+export interface TrailSummary {
+  id: string;
+  title: string;
+  description: string;
+  imageUrl?: string;
+  durationMonths?: number;
+  moduleCount: number;
+}
+
 export interface Project {
   id: string;
   clientId: string;
