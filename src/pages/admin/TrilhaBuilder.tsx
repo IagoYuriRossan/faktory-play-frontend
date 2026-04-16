@@ -5,9 +5,11 @@ import {
   ChevronDown, ChevronUp, Save, Loader2, ArrowLeft,
   Layout, Image as ImageIcon, Type, Code, Layers,
   Eye, Search, Bell, User as UserIcon, Minus, Maximize2,
-  RefreshCw, MousePointer2, Settings
+  RefreshCw, MousePointer2, Settings,
+  GripVertical, Copy, Pencil
 } from 'lucide-react';
 import { api } from '../../utils/api';
+import { auth } from '../../utils/firebase';
 import DOMPurify from 'dompurify';
 import { Trail, Module, Lesson } from '../../@types';
 import { cn } from '../../utils/utils';
@@ -27,10 +29,13 @@ export default function AdminTrilhaBuilder() {
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<number | null>(null);
   const [showBlockEditor, setShowBlockEditor] = useState(false);
+  const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const [editingBlockIdState, setEditingBlockIdState] = useState<string | null>(null);
   const [editingBlockHtmlState, setEditingBlockHtmlState] = useState<string>('');
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [editingLessonId, setEditingLessonId] = useState<string | null>(null);
   const [editingLessonTitle, setEditingLessonTitle] = useState('');
   const [editingLessonParentId, setEditingLessonParentId] = useState<string | null>(null);
@@ -231,8 +236,7 @@ export default function AdminTrilhaBuilder() {
     setLoading(true);
     try {
       const data = await api.get<Trail>(`/api/trails/${id}`);
-            const resp = await api.put(`/api/trails/${trailId}`, finalData);
-            console.debug('Autosave PUT response:', resp);
+      setTrailData({ title: data.title, description: data.description, modules: data.modules });
       setIsDirty(false);
       setShowPreviewModal(false);
       showToast('Recarregado do servidor');
@@ -305,8 +309,7 @@ export default function AdminTrilhaBuilder() {
           title: '',
           videoUrl: '',
           videoPosition: 'top',
-          // start with only the logo block
-          content: createLogoContent(),
+          content: '',
         }
       ]
     }));
@@ -356,7 +359,7 @@ export default function AdminTrilhaBuilder() {
           title: '',
           videoUrl: '',
           videoPosition: 'top',
-          content: createLogoContent(),
+          content: '',
         }
       ]
     };
@@ -366,7 +369,7 @@ export default function AdminTrilhaBuilder() {
     setActiveModuleId(newModule.id);
     setActiveLessonId(newLessonId);
     setExpandedModules(prev => ({ ...prev, [newModule.id]: true }));
-    setIsDirty(true);
+
     console.debug('addModule: created', newModule);
     showToast('Etapa criada');
 
@@ -417,7 +420,7 @@ export default function AdminTrilhaBuilder() {
       title: '',
       videoUrl: '',
       videoPosition: 'top',
-      content: createLogoContent(),
+      content: '',
     };
     setTrailData(prev => ({
       ...prev,
@@ -566,8 +569,11 @@ export default function AdminTrilhaBuilder() {
   const dragLessonIdRef = useRef<string | null>(null);
   const dragVideoRef = useRef<boolean>(false);
   const dragTitleRef = useRef<boolean>(false);
+  const dragPageTitleRef = useRef<boolean>(false);
+  const dragImageRef = useRef<string | null>(null);
   const blocksAreaRef = useRef<HTMLDivElement | null>(null);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const blockRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [dragPreview, setDragPreview] = useState<{ type: 'none' | 'title' | 'content' | 'block'; id?: string; rect?: { top: number; left: number; width: number; height: number }; pos?: 'before' | 'after'; source?: 'list' | 'preview' }>({ type: 'none' });
 
@@ -796,6 +802,92 @@ export default function AdminTrilhaBuilder() {
     try { return crypto.randomUUID(); } catch { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
   };
 
+  const handleImageFile = (file: File) => {
+    // If trail exists on server and lesson/module ids are available, try uploading
+    if (id && activeModuleId && activeLessonId) {
+      setImageUploading(true);
+      setUploadProgress(0);
+      (async () => {
+        let xhr: XMLHttpRequest | null = null;
+        try {
+          const user = auth.currentUser;
+          const token = user ? await user.getIdToken() : null;
+          const form = new FormData();
+          form.append('image', file);
+
+          await new Promise<void>((resolve, reject) => {
+            xhr = new XMLHttpRequest();
+            const url = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001'}/api/trails/${trailId}/modules/${activeModuleId}/lessons/${activeLessonId}/image`;
+            xhr.open('POST', url, true);
+            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable) {
+                const pct = Math.round((e.loaded / e.total) * 100);
+                setUploadProgress(pct);
+              }
+            };
+            xhr.onload = () => {
+              const status = xhr!.status;
+              const text = xhr!.responseText;
+              let data: any = null;
+              try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+              if (status >= 200 && status < 300) {
+                const imageUrl = data?.imageUrl || data?.url;
+                if (imageUrl) {
+                  updateLesson({ imageUrl });
+                  showToast('Imagem enviada e salva no servidor');
+                  resolve();
+                  return;
+                }
+                reject(new Error('Resposta do servidor não continha imageUrl'));
+                return;
+              }
+              if (status === 413) {
+                reject(new Error('Tamanho do arquivo excede o limite de 5MB (413)'));
+                return;
+              }
+              reject(new Error((data && data.message) || `Upload failed (${status})`));
+            };
+            xhr.onerror = () => reject(new Error('Erro na requisição de upload'));
+            xhr.onabort = () => reject(new Error('Upload abortado'));
+            xhr.send(form);
+          });
+          setUploadProgress(100);
+          return;
+        } catch (err: any) {
+          console.warn('Upload falhou, usando DataURL como fallback:', err);
+          if (err && err.message && err.message.includes('5MB')) showToast('Erro: arquivo maior que 5MB');
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result as string;
+            updateLesson({ imageUrl: dataUrl });
+            showToast('Upload falhou — imagem armazenada localmente (salve para persistir)');
+          };
+          reader.readAsDataURL(file);
+        } finally {
+          setImageUploading(false);
+          setTimeout(() => setUploadProgress(0), 700);
+          // abort XHR if still open
+          try {
+            if (xhr) {
+              try { (xhr as any).abort(); } catch (e) { /* noop */ }
+            }
+          } catch (e) { /* noop */ }
+        }
+      })();
+      return;
+    }
+
+    // Fallback: read as DataURL and attach locally
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      updateLesson({ imageUrl: dataUrl });
+      showToast('Imagem adicionada à aula (local) — salve para persistir');
+    };
+    reader.readAsDataURL(file);
+  };
+
   const parseBlocks = (content: string) => {
     const re = /<!-- block:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+) -->([\s\S]*?)<!-- \/block:\1:\2 -->/g;
     const blocks: Array<any> = [];
@@ -836,7 +928,7 @@ export default function AdminTrilhaBuilder() {
             <div key={b.id} className="relative">
               <div
                 ref={(el) => { blockRefs.current[b.id] = el; }}
-                className={`group bg-white p-3 rounded border border-slate-100 relative ${dragPreview.type === 'block' && dragPreview.id === b.id ? 'opacity-80 shadow-lg' : ''}`}
+                className={`bg-white rounded border transition-all relative ${dragPreview.type === 'block' && dragPreview.id === b.id ? 'opacity-80 shadow-lg ring-2 ring-faktory-blue' : hoveredBlockId === b.id ? 'ring-2 ring-faktory-blue/50 border-faktory-blue/30' : 'border-slate-100'}`}
                 draggable
                 onDragStart={(e) => { dragBlockIdRef.current = b.id; e.dataTransfer.effectAllowed = 'move'; }}
                 onDragOver={(e) => {
@@ -855,8 +947,9 @@ export default function AdminTrilhaBuilder() {
                   }
                 }}
                 onDragLeave={() => { setDragPreview({ type: 'none' }); }}
-                onMouseEnter={(e) => {
+                onMouseEnter={() => {
                   if (dragBlockIdRef.current) return;
+                  setHoveredBlockId(b.id);
                   const el = blockRefs.current[b.id];
                   const container = blocksAreaRef.current;
                   if (el && container) {
@@ -877,10 +970,70 @@ export default function AdminTrilhaBuilder() {
                   const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
                   setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === b.id ? prev : { type: 'block', id: b.id }), pos }));
                 }}
-                onMouseLeave={() => { if (!dragBlockIdRef.current) setDragPreview({ type: 'none' }); }}
+                onMouseLeave={() => {
+                  if (!dragBlockIdRef.current) setDragPreview({ type: 'none' });
+                  setHoveredBlockId(null);
+                }}
                 onDrop={(e) => {
                   e.preventDefault();
+                  const file = e.dataTransfer?.files?.[0];
+                  if (dragImageRef.current) {
+                    if (!activeLesson) {
+                      showToast('Selecione uma aula para mover a imagem');
+                    } else {
+                      const imgSrc = dragImageRef.current;
+                      const imgBlock = genBlock(`<img src="${imgSrc}" alt=\"Imagem da aula\" />`, 'image');
+                      const content = activeLesson.content || '';
+                      const parsed = parseBlocks(content).sort((a: any, b: any) => a.index - b.index);
+                      const idx = parsed.findIndex((x: any) => x.id === b.id);
+                      const parts: string[] = [];
+                      let last = 0;
+                      for (const bl of parsed) {
+                        parts.push(content.slice(last, bl.index));
+                        parts.push(content.slice(bl.index, bl.index + bl.length));
+                        last = bl.index + bl.length;
+                      }
+                      parts.push(content.slice(last));
+                      const insertAt = (dragPreview.pos === 'after' ? (idx * 2 + 2) : (idx * 2));
+                      parts.splice(insertAt, 0, imgBlock);
+                      updateLesson({ content: parts.join(''), imageUrl: '' });
+                      showToast('Imagem movida para o conteúdo (no local do drop)');
+                    }
+                    dragImageRef.current = null;
+                    setDragPreview({ type: 'none' });
+                    return;
+                  }
+                  if (file && file.type && file.type.startsWith('image/')) {
+                    handleImageFile(file);
+                    return;
+                  }
                   const pos = dragPreview.pos || 'before';
+                  if (dragPageTitleRef.current && trailData.title) {
+                    if (!activeLesson) {
+                      showToast('Selecione uma aula para mover o título da página');
+                    } else {
+                      const block = genBlock(`<h2>${trailData.title}</h2>`, 'title');
+                      const content = activeLesson.content || '';
+                      const parsed = parseBlocks(content).sort((a: any, b: any) => a.index - b.index);
+                      const idx = parsed.findIndex((x: any) => x.id === b.id);
+                      const parts: string[] = [];
+                      let last = 0;
+                      for (const bl of parsed) {
+                        parts.push(content.slice(last, bl.index));
+                        parts.push(content.slice(bl.index, bl.index + bl.length));
+                        last = bl.index + bl.length;
+                      }
+                      parts.push(content.slice(last));
+                      const insertAt = pos === 'before' ? (idx * 2) : (idx * 2 + 2);
+                      parts.splice(insertAt, 0, block);
+                      updateLesson({ content: parts.join('') });
+                      setTrailData(prev => ({ ...prev, title: '' }));
+                      showToast('Título da página movido para o conteúdo');
+                    }
+                    dragPageTitleRef.current = false;
+                    setDragPreview({ type: 'none' });
+                    return;
+                  }
                   if (dragTitleRef.current && activeLesson && activeLesson.title) {
                     const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
                     const content = activeLesson.content || '';
@@ -908,29 +1061,35 @@ export default function AdminTrilhaBuilder() {
                   setDragPreview({ type: 'none' });
                 }}
               >
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white p-1 rounded shadow text-slate-400 border border-slate-100 cursor-grab opacity-0 group-hover:opacity-100 transition-opacity">
-                  <div className="w-6 h-2 flex items-center justify-center gap-1">
-                    <span className="w-1 h-1 bg-slate-300 rounded-full" />
-                    <span className="w-1 h-1 bg-slate-300 rounded-full" />
-                    <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                {/* ── Toolbar dentro do bloco — aparece ao passar o mouse ── */}
+                {hoveredBlockId === b.id && (
+                  <div className="flex items-center justify-between px-1.5 py-1 bg-white border-b border-faktory-blue/20 rounded-t">
+                    <div className="flex items-center gap-1 bg-faktory-blue text-white text-[9px] font-bold px-1.5 py-0.5 rounded cursor-grab select-none">
+                      <GripVertical size={10} />
+                      {b.type === 'custom' ? 'Texto/HTML' :
+                       b.type === 'title' ? 'Título' :
+                       b.type === 'image' ? 'Imagem' :
+                       b.type === 'video' ? 'Vídeo' :
+                       b.type === 'highlight' ? 'Destaque' :
+                       b.type === 'group' ? 'Grupo' :
+                       b.type === 'embed' ? 'Embed' :
+                       b.type === 'logo' ? 'Logo' :
+                       b.type}
+                    </div>
+                    <div className="flex items-center gap-0.5">
+                      <button onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Editar"><Pencil size={11} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Duplicar"><Copy size={11} /></button>
+                      <div className="w-px h-3 bg-slate-200" />
+                      <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, -1); }} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Mover para cima"><ChevronUp size={11} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, 1); }} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Mover para baixo"><ChevronDown size={11} /></button>
+                      <div className="w-px h-3 bg-slate-200" />
+                      <button onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }} className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600" title="Remover"><Trash2 size={11} /></button>
+                    </div>
                   </div>
-                </div>
-                <div className="absolute top-2 right-2 flex gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }} className="p-1 bg-white border rounded text-slate-600">Editar</button>
-                  <button onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }} className="p-1 bg-white border rounded text-slate-600">Duplicar</button>
-                  <button onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }} className="p-1 bg-red-600 text-white rounded">Remover</button>
-                </div>
-                <div className="absolute top-2 left-2 z-10">
-                  <div className="bg-amber-100 text-amber-800 text-xs font-bold px-2 py-0.5 rounded">{b.type}</div>
-                </div>
-                <div className="relative">
-                  <div className="absolute inset-0" />
-                  <div className="text-sm font-bold text-slate-700">{b.type}</div>
+                )}
+                {/* ── Preview do conteúdo ── */}
+                <div className="p-3">
                   <div className="text-xs text-slate-400 line-clamp-3" dangerouslySetInnerHTML={{ __html: b.html }} />
-                </div>
-                <div className="mt-2 flex items-center gap-2">
-                  <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, -1); }} className="text-[11px] px-2 py-1 bg-white border rounded text-slate-600 hover:bg-slate-50">↑</button>
-                  <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, 1); }} className="text-[11px] px-2 py-1 bg-white border rounded text-slate-600 hover:bg-slate-50">↓</button>
                 </div>
               </div>
             </div>
@@ -1029,6 +1188,9 @@ export default function AdminTrilhaBuilder() {
               className="text-sm font-bold text-slate-700 uppercase tracking-wider bg-transparent outline-none w-64"
               value={trailData.title}
               placeholder="Nova Trilha"
+              draggable
+              onDragStart={(e) => { dragPageTitleRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
+              onDragEnd={() => { dragPageTitleRef.current = false; }}
               onChange={(e) => {
                 const title = e.target.value;
                 setTrailData(prev => ({ ...prev, title }));
@@ -1103,6 +1265,13 @@ export default function AdminTrilhaBuilder() {
       </div>
 
       <div className="flex-1 flex overflow-hidden">
+        {/* hidden file input for image selection */}
+        <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleImageFile(f);
+          // reset so same file can be selected again
+          (e.target as HTMLInputElement).value = '';
+        }} />
         {/* Left Sidebar - Structure */}
         <aside className="w-72 bg-white border-r border-slate-200 flex flex-col shrink-0">
           <div className="p-4 border-b border-slate-100">
@@ -1150,13 +1319,21 @@ export default function AdminTrilhaBuilder() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                      <button 
+                          <button 
                         onClick={(e) => { e.stopPropagation(); addLesson(module.id); }}
                         title="Adicionar aula"
                         className="text-slate-400 hover:text-faktory-blue p-1 rounded"
                       >
                         <Plus size={14} />
                       </button>
+                          {imageUploading && activeModuleId === module.id && (
+                            <div className="flex items-center gap-2 px-2">
+                              <div className="text-xs text-slate-400">Enviando imagem... {uploadProgress}%</div>
+                              <div className="w-24 h-2 bg-slate-200 rounded overflow-hidden">
+                                <div className="bg-faktory-blue h-2 rounded" style={{ width: `${uploadProgress}%` }} />
+                              </div>
+                            </div>
+                          )}
                       <button
                         onClick={(e) => { e.stopPropagation(); moveModule(module.id, -1); }}
                         title="Mover etapa para cima"
@@ -1280,7 +1457,15 @@ export default function AdminTrilhaBuilder() {
             {/* Preview Header */}
                   <div className="p-10 flex flex-col items-center border-b border-slate-50"
                     onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => { e.preventDefault(); if (dragVideoRef.current) { setVideoPosition('title-top'); dragVideoRef.current = false; showToast('Vídeo movido acima do título'); } }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const file = e.dataTransfer?.files?.[0];
+                      if (file && file.type && file.type.startsWith('image/')) {
+                        handleImageFile(file);
+                        return;
+                      }
+                      if (dragVideoRef.current) { setVideoPosition('title-top'); dragVideoRef.current = false; showToast('Vídeo movido acima do título'); }
+                    }}
                   >
               <div className="w-64 mb-10"
                 onDragOver={(e) => {
@@ -1290,6 +1475,37 @@ export default function AdminTrilhaBuilder() {
                 onDragLeave={() => { setDragPreview({ type: 'none' }); }}
                 onDrop={(e) => {
                   e.preventDefault();
+                  const file = e.dataTransfer?.files?.[0];
+                  if (dragImageRef.current) {
+                    if (!activeLesson) {
+                      showToast('Selecione uma aula para mover a imagem');
+                    } else {
+                      const imgSrc = dragImageRef.current;
+                      const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
+                      updateLesson({ content: block + '\n' + (activeLesson.content || ''), imageUrl: '' });
+                      showToast('Imagem movida para o conteúdo');
+                    }
+                    dragImageRef.current = null;
+                    setDragPreview({ type: 'none' });
+                    return;
+                  }
+                  if (file && file.type && file.type.startsWith('image/')) {
+                    handleImageFile(file);
+                    return;
+                  }
+                  if (dragPageTitleRef.current) {
+                    if (!activeLesson) {
+                      showToast('Selecione uma aula para mover o título da página');
+                    } else {
+                      const block = genBlock(`<h2>${trailData.title}</h2>`, 'title');
+                      updateLesson({ content: block + '\n' + (activeLesson.content || '') });
+                      setTrailData(prev => ({ ...prev, title: '' }));
+                      showToast('Título da página movido para o conteúdo');
+                    }
+                    dragPageTitleRef.current = false;
+                    setDragPreview({ type: 'none' });
+                    return;
+                  }
                   if (dragVideoRef.current) { setVideoPosition('title-top'); dragVideoRef.current = false; showToast('Vídeo movido acima do título'); }
                   if (dragBlockIdRef.current) { const dragId = dragBlockIdRef.current; const blocks = parseBlocks(activeLesson?.content || ''); if (blocks.length) reorderBlock(dragId, blocks[0].id); dragBlockIdRef.current = null; }
                   setDragPreview({ type: 'none' });
@@ -1305,7 +1521,69 @@ export default function AdminTrilhaBuilder() {
                 <p className="text-[10px] text-center font-bold text-slate-400 uppercase tracking-widest mt-2">Uma empresa Esquadgroup</p>
               </div>
 
-              {activeLesson && activeLesson.videoPosition === 'title-top' && (
+              {/* Aula image preview (se houver imagem da aula) */}
+              {activeLesson?.imageUrl && (
+                <div className="w-full mb-6 relative">
+                  {/* image preview with overlay controls and dragging */}
+                  <img
+                    src={activeLesson.imageUrl}
+                    alt="Imagem da aula"
+                    className="rounded mx-auto cursor-grab"
+                    draggable
+                    onDragStart={(e) => { dragImageRef.current = activeLesson.imageUrl || null; e.dataTransfer.effectAllowed = 'move'; }}
+                    onDragEnd={() => { dragImageRef.current = null; }}
+                    style={{
+                      width: activeLesson.imageOptions?.size === 'small' ? 320 : activeLesson.imageOptions?.size === 'medium' ? 640 : '100%'
+                    }}
+                  />
+
+                  <div className="absolute top-2 right-2 flex gap-2 z-20">
+                    <button
+                      onClick={() => imageInputRef.current?.click()}
+                      className="px-2 py-1 bg-white border rounded text-xs"
+                      title="Substituir imagem"
+                    >Substituir</button>
+
+                    <button
+                      onClick={() => {
+                        // Enter image-move mode: set dragImageRef so next drop inserts at exact location
+                        if (!activeLesson || !activeLesson.imageUrl) return;
+                        dragImageRef.current = activeLesson.imageUrl;
+                        showToast('Arraste e solte a imagem no local desejado para inserir');
+                      }}
+                      className="px-2 py-1 bg-white border rounded text-xs"
+                      title="Mover para conteúdo"
+                    >Mover</button>
+
+                    <button
+                      onClick={() => {
+                        const current = activeLesson?.imageOptions?.size || 'full';
+                        const next = current === 'full' ? 'medium' : current === 'medium' ? 'small' : 'full';
+                        updateLesson({ imageOptions: { ...(activeLesson?.imageOptions || {}), size: next } });
+                        showToast(`Tamanho: ${next}`);
+                      }}
+                      className="px-2 py-1 bg-white border rounded text-xs"
+                      title="Alternar tamanho"
+                    >Tamanho</button>
+
+                    <button
+                      onClick={() => { updateLesson({ imageUrl: '' }); showToast('Imagem removida'); }}
+                      className="px-2 py-1 bg-white border rounded text-xs text-red-600"
+                      title="Remover imagem"
+                    >Remover</button>
+                  </div>
+
+                  {imageUploading && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-white/60">
+                      <div className="w-2/3 bg-slate-100 rounded overflow-hidden">
+                        <div style={{ width: `${uploadProgress}%` }} className="h-2 bg-faktory-blue transition-all" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeLesson && activeLesson.videoPosition === 'title-top' && activeLesson.videoUrl && (
                 <div className="w-full mb-6">
                   <div className="w-full">
                     {/* preview when videoPosition === title-top */}
@@ -1373,13 +1651,41 @@ export default function AdminTrilhaBuilder() {
                 onDragLeave={() => { setDragPreview({ type: 'none' }); }}
                 onDrop={(e) => {
                   e.preventDefault();
+                  const file = e.dataTransfer?.files?.[0];
+                  if (dragImageRef.current) {
+                    if (!activeLesson) {
+                      showToast('Selecione uma aula para mover a imagem');
+                    } else {
+                      const imgSrc = dragImageRef.current;
+                      const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
+                      updateLesson({ content: block + '\n' + (activeLesson.content || ''), imageUrl: '' });
+                      showToast('Imagem movida para o conteúdo');
+                    }
+                    dragImageRef.current = null;
+                    setDragPreview({ type: 'none' });
+                    return;
+                  }
+                  if (file && file.type && file.type.startsWith('image/')) {
+                    handleImageFile(file);
+                    return;
+                  }
                   if (dragVideoRef.current) { setVideoPosition('top'); dragVideoRef.current = false; showToast('Vídeo movido acima do conteúdo'); }
                   if (dragTitleRef.current && activeLesson && activeLesson.title) {
-                    // convert title to block at top of content
                     const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
                     updateLesson({ content: block + '\n' + (activeLesson.content || ''), title: '' });
                     dragTitleRef.current = false;
                     showToast('Título movido para o conteúdo');
+                  }
+                  if (dragPageTitleRef.current) {
+                    if (!activeLesson) {
+                      showToast('Selecione uma aula para mover o título da página');
+                    } else {
+                      const block = genBlock(`<h2>${trailData.title}</h2>`, 'title');
+                      updateLesson({ content: block + '\n' + (activeLesson.content || '') });
+                      setTrailData(prev => ({ ...prev, title: '' }));
+                      showToast('Título da página movido para o conteúdo');
+                    }
+                    dragPageTitleRef.current = false;
                   }
                   if (dragBlockIdRef.current) { const dragId = dragBlockIdRef.current; const blocks = parseBlocks(activeLesson?.content || ''); if (blocks.length) reorderBlock(dragId, blocks[0].id); dragBlockIdRef.current = null; }
                   setDragPreview({ type: 'none' });
@@ -1388,7 +1694,7 @@ export default function AdminTrilhaBuilder() {
               {activeLesson && (
                 <>
                   {/* Video Placeholder */}
-                  {(activeLesson.videoPosition !== 'title-top' && activeLesson.videoPosition !== 'bottom') && (
+                  {(activeLesson.videoPosition !== 'title-top' && activeLesson.videoPosition !== 'bottom') && activeLesson.videoUrl && (
                       <div 
                         draggable
                         onDragStart={(e) => { dragVideoRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
@@ -1449,33 +1755,24 @@ export default function AdminTrilhaBuilder() {
                       </div>
                   )}
 
-                  {/* HTML Content */}
+                  {/* Blocos da aula — área de conteúdo principal */}
                   <div className="prose prose-slate max-w-none">
                     {dragPreview.type === 'content' && (dragVideoRef.current || dragBlockIdRef.current) && (
-                      <div className="mb-4 p-4 border-2 border-dashed border-faktory-blue rounded bg-white/60 text-center">Pré-visualização de inserção na área de conteúdo</div>
+                      <div className="mb-4 p-4 border-2 border-dashed border-faktory-blue rounded bg-white/60 text-center">Solte aqui para inserir</div>
                     )}
-                    <textarea 
-                      className="w-full min-h-[200px] p-4 bg-slate-50 border border-slate-100 rounded-md text-sm outline-none focus:ring-1 focus:ring-faktory-blue"
-                      value={activeLesson.content}
-                      onChange={(e) => updateLesson({ content: e.target.value })}
-                      placeholder="Conteúdo da aula (HTML ou Texto)..."
-                    />
-
-                    {/* Blocks quick list */}
-                    <div ref={blocksAreaRef} className="mt-4 p-3 bg-slate-50 border border-slate-100 rounded-md relative">
-                      <h4 className="text-xs font-bold text-slate-600 mb-2">Blocos da aula</h4>
-                      {renderBlockList()}
-                    </div>
-
-                    {/* Live Preview - render blocks as they would appear on the page */}
-                    <div className="mt-6">
-                      <h4 className="text-sm font-bold text-slate-700 mb-2">Pré-visualização ao vivo</h4>
-                      <div ref={previewAreaRef} className="bg-white border border-slate-100 rounded-md p-4 space-y-4 relative">
+                    <div ref={blocksAreaRef} />
+                    <div ref={previewAreaRef} className="space-y-4 relative min-h-[120px]">
                         {parseBlocks(activeLesson?.content || '').sort((a,b) => a.index - b.index).map((b: any) => (
                           <div
                             key={b.id}
                             ref={(el) => { blockRefs.current[b.id] = el; }}
-                            className={`group relative p-4 rounded ${dragPreview.type === 'block' && dragPreview.id === b.id ? 'shadow-lg' : 'border'} bg-white`}
+                            className={`relative rounded transition-all ${
+                              dragPreview.type === 'block' && dragPreview.id === b.id
+                                ? 'shadow-lg ring-2 ring-faktory-blue ring-offset-2'
+                                : hoveredBlockId === b.id
+                                  ? 'ring-2 ring-faktory-blue/50 ring-offset-1'
+                                  : ''
+                            } bg-white`}
                             draggable
                             onDragStart={(e) => { dragBlockIdRef.current = b.id; e.dataTransfer.effectAllowed = 'move'; }}
                             onDragOver={(e) => {
@@ -1494,8 +1791,9 @@ export default function AdminTrilhaBuilder() {
                               }
                             }}
                             onDragLeave={() => setDragPreview({ type: 'none' })}
-                            onMouseEnter={(e) => {
+                            onMouseEnter={() => {
                               if (dragBlockIdRef.current) return;
+                              setHoveredBlockId(b.id);
                               const el = blockRefs.current[b.id];
                               const container = blocksAreaRef.current;
                               if (el && container) {
@@ -1516,7 +1814,10 @@ export default function AdminTrilhaBuilder() {
                               const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
                               setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === b.id ? prev : { type: 'block', id: b.id }), pos }));
                             }}
-                            onMouseLeave={() => { if (!dragBlockIdRef.current) setDragPreview({ type: 'none' }); }}
+                            onMouseLeave={() => {
+                              if (!dragBlockIdRef.current) setDragPreview({ type: 'none' });
+                              setHoveredBlockId(null);
+                            }}
                             onDrop={(e) => {
                               e.preventDefault();
                               const pos = dragPreview.pos || 'before';
@@ -1547,23 +1848,62 @@ export default function AdminTrilhaBuilder() {
                               setDragPreview({ type: 'none' });
                             }}
                           >
-                            <div className="absolute top-2 right-2 flex gap-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }} className="px-2 py-1 bg-white border rounded text-xs">Editar</button>
-                              <button onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }} className="px-2 py-1 bg-white border rounded text-xs">Duplicar</button>
-                              <button onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }} className="px-2 py-1 bg-red-600 text-white rounded text-xs">Remover</button>
-                            </div>
-                            <div className="absolute top-2 left-2 z-20">
-                              <div className="bg-amber-100 text-amber-800 text-xs font-bold px-2 py-0.5 rounded">{b.type}</div>
-                            </div>
-                            <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white p-1 rounded shadow text-slate-400 border border-slate-100 cursor-grab opacity-0 group-hover:opacity-100 transition-opacity z-20">
-                              <div className="w-6 h-2 flex items-center justify-center gap-1">
-                                <span className="w-1 h-1 bg-slate-300 rounded-full" />
-                                <span className="w-1 h-1 bg-slate-300 rounded-full" />
-                                <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                            {/* ── Toolbar overlay — aparece ao passar o mouse ── */}
+                            {hoveredBlockId === b.id && (
+                              <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t">
+                                {/* esquerda: badge de tipo + handle */}
+                                <div
+                                  className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-grab select-none"
+                                  title="Arrastar bloco"
+                                >
+                                  <GripVertical size={11} />
+                                  {b.type === 'custom' ? 'Texto/HTML' :
+                                   b.type === 'title' ? 'Título' :
+                                   b.type === 'image' ? 'Imagem' :
+                                   b.type === 'video' ? 'Vídeo' :
+                                   b.type === 'highlight' ? 'Destaque' :
+                                   b.type === 'group' ? 'Grupo' :
+                                   b.type === 'embed' ? 'Embed' :
+                                   b.type === 'logo' ? 'Logo' :
+                                   b.type}
+                                </div>
+                                {/* direita: botões de ação */}
+                                <div className="flex items-center gap-0.5">
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }}
+                                    className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
+                                    title="Editar"
+                                  ><Pencil size={13} /></button>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }}
+                                    className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
+                                    title="Duplicar"
+                                  ><Copy size={13} /></button>
+                                  <div className="w-px h-4 bg-slate-200 mx-0.5" />
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, -1); }}
+                                    className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
+                                    title="Mover para cima"
+                                  ><ChevronUp size={13} /></button>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, 1); }}
+                                    className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
+                                    title="Mover para baixo"
+                                  ><ChevronDown size={13} /></button>
+                                  <div className="w-px h-4 bg-slate-200 mx-0.5" />
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }}
+                                    className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
+                                    title="Remover"
+                                  ><Trash2 size={13} /></button>
+                                </div>
                               </div>
+                            )}
+                            {/* ── Conteúdo do bloco ── */}
+                            <div className={`relative ${hoveredBlockId === b.id ? 'pt-8' : ''}`}>
+                              <div className="absolute inset-0 z-10" />
+                              <div className="p-4" dangerouslySetInnerHTML={{ __html: b.html }} />
                             </div>
-                            <div className="absolute inset-0 z-10" />
-                            <div dangerouslySetInnerHTML={{ __html: b.html }} />
                           </div>
                         ))}
 
@@ -1587,10 +1927,10 @@ export default function AdminTrilhaBuilder() {
                           </>
                         )}
                       </div>
-                    </div>
                   </div>
 
-                  {/* Quiz Section */}
+                  {/* Quiz Section — só exibe quando a aula já tem quiz definido */}
+                  {activeLesson.quiz ? (
                   <div className="mt-10 pt-10 border-t border-slate-100">
                     <h3 className="text-lg font-bold text-slate-700 mb-6 flex items-center gap-2">
                       <HelpCircle className="text-faktory-blue" size={20} />
@@ -1624,8 +1964,25 @@ export default function AdminTrilhaBuilder() {
                           </div>
                         ))}
                       </div>
+                      <button
+                        onClick={() => updateLesson({ quiz: undefined })}
+                        className="text-xs text-red-500 hover:underline"
+                      >
+                        Remover questionário
+                      </button>
                     </div>
                   </div>
+                  ) : (
+                  <div className="mt-10 pt-10 border-t border-slate-100">
+                    <button
+                      onClick={() => updateLesson({ quiz: { id: genId(), question: '', options: ['', '', '', ''], correctIndex: 0 } })}
+                      className="flex items-center gap-2 text-sm text-slate-400 hover:text-faktory-blue transition-colors"
+                    >
+                      <HelpCircle size={16} />
+                      Adicionar questionário de fixação
+                    </button>
+                  </div>
+                  )}
                 </>
               )}
             </div>
@@ -1667,6 +2024,12 @@ export default function AdminTrilhaBuilder() {
                   const label = comp.label;
                   if (label.includes('Vídeo')) {
                     setShowVideoModal(true);
+                    return;
+                  }
+
+                  if (label.includes('Imagem')) {
+                    // open file picker to attach image to lesson (do not paste into content)
+                    imageInputRef.current?.click();
                     return;
                   }
 

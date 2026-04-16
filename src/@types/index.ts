@@ -34,6 +34,8 @@ export interface Lesson {
   title: string;
   videoUrl: string;
   content: string;
+  imageUrl?: string;
+  imageOptions?: { size?: 'small' | 'medium' | 'full' };
   quiz?: Quiz;
   videoOptions?: {
     subtitlesUrl?: string;
