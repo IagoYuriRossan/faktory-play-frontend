@@ -125,6 +125,12 @@ export default function AdminTrilhaBuilder() {
 
   const welcomeContent = makeBlock('<p>Bem-vindo à primeira aula.</p>');
 
+  const createLogoContent = () => {
+    const logoHtml = `<div class="faktory-logo"><img src="/logo.png" alt="Faktory Logo" style="max-width:320px;"/></div>`;
+    const logoBlockId = `b-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    return `<!-- block:logo:${logoBlockId} -->\n${DOMPurify.sanitize(logoHtml, { WHOLE_DOCUMENT: false })}\n<!-- /block:logo:${logoBlockId} -->`;
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -243,13 +249,20 @@ export default function AdminTrilhaBuilder() {
 
   const handleDeleteTrail = async () => {
     if (!id) return;
-    try {
-      await api.delete(`/api/trails/${id}`);
-      showToast('Trilha removida');
-      navigate('/admin/trilhas');
-    } catch (err) {
-      showToast('Erro ao remover trilha');
-    }
+    // Optimistic UX: navigate immediately so the user sees the list fast,
+    // then perform deletion in background. If deletion fails, notify the user.
+    navigate('/admin/trilhas');
+    showToast('Removendo trilha...');
+    (async () => {
+      try {
+        await api.delete(`/api/trails/${id}`);
+        // Success — inform user (list already shows navigated view)
+        showToast('Trilha removida');
+      } catch (err) {
+        console.error('Erro ao remover trilha (background):', err);
+        showToast('Erro ao remover trilha — verifique a conexão');
+      }
+    })();
   };
 
   useEffect(() => {
@@ -289,16 +302,11 @@ export default function AdminTrilhaBuilder() {
       lessons: [
         {
           id: `l-${Date.now()}-${index}-1`,
-          title: `Introdução ao ${title.split('. ')[1]}`,
+          title: '',
           videoUrl: '',
           videoPosition: 'top',
-          content: makeBlock(`<p>Bem-vindo à etapa de ${title.split('. ')[1]}. Aqui você aprenderá os conceitos fundamentais.</p>`),
-          quiz: {
-            id: `q-${Date.now()}-${index}`,
-            question: 'O que aprendemos nesta aula?',
-            options: ['Opção A', 'Opção B', 'Opção C', 'Opção D'],
-            correctIndex: 0
-          }
+          // start with only the logo block
+          content: createLogoContent(),
         }
       ]
     }));
@@ -337,21 +345,23 @@ export default function AdminTrilhaBuilder() {
   };
 
   const addModule = () => {
-    const newLessonId = Date.now().toString();
+    const newLessonId = genId();
+    const newModuleId = genId();
     const newModule: Module = {
-      id: Date.now().toString(),
-      title: `Etapa ${trailData.modules.length + 1}`,
+      id: newModuleId,
+      title: '',
       lessons: [
         {
           id: newLessonId,
-          title: 'Boas vindas',
+          title: '',
           videoUrl: '',
           videoPosition: 'top',
-          content: welcomeContent,
-          quiz: { id: Date.now().toString() + '-quiz', question: '', options: ['', '', '', ''], correctIndex: 0 }
+          content: createLogoContent(),
         }
       ]
     };
+
+    // optimistic local update
     setTrailData(prev => ({ ...prev, modules: [...prev.modules, newModule] }));
     setActiveModuleId(newModule.id);
     setActiveLessonId(newLessonId);
@@ -359,9 +369,21 @@ export default function AdminTrilhaBuilder() {
     setIsDirty(true);
     console.debug('addModule: created', newModule);
     showToast('Etapa criada');
-    // Não chamar endpoints por-item (backend não implementa). Rely no autosave/PUT global.
+
+    // If trail exists on server, try creating module via nested POST; fallback to global PUT
     if (id) {
-      console.warn('Backend não expõe endpoints de módulo; mudanças serão salvas no PUT /api/trails/{id}');
+      (async () => {
+        try {
+          const payload = { id: newModule.id, title: newModule.title, lessons: newModule.lessons };
+          const res = await api.post<any>(`/api/trails/${trailId}/modules`, payload);
+          if (res && res.id) {
+            // replace local module id if server returned canonical id
+            setTrailData(prev => ({ ...prev, modules: prev.modules.map(m => m.id === newModule.id ? { ...m, id: res.id } : m) }));
+          }
+        } catch (err) {
+          console.warn('POST /modules failed, will rely on PUT /api/trails to persist:', err);
+        }
+      })();
     }
   };
 
@@ -389,23 +411,13 @@ export default function AdminTrilhaBuilder() {
   const addLesson = (moduleId: string, parentLessonId?: string) => {
     // ensure active module is set so subsequent edits/saves work
     setActiveModuleId(moduleId);
-    const newLessonId = Date.now().toString();
-    const logoHtml = `<div class="faktory-logo"><img src="/logo.png" alt="Faktory Logo" style="max-width:320px;"/></div>`;
-    const logoBlockId = `b-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    const logoContent = `<!-- block:logo:${logoBlockId} -->\n${DOMPurify.sanitize(logoHtml, { WHOLE_DOCUMENT: false })}\n<!-- /block:logo:${logoBlockId} -->`;
-
+    const newLessonId = genId();
     const newLesson: Lesson = {
       id: newLessonId,
-      title: 'Nova Aula',
+      title: '',
       videoUrl: '',
       videoPosition: 'top',
-      content: parentLessonId ? logoContent : '',
-      quiz: {
-        id: Date.now().toString() + '-quiz',
-        question: '',
-        options: ['', '', '', ''],
-        correctIndex: 0
-      }
+      content: createLogoContent(),
     };
     setTrailData(prev => ({
       ...prev,
@@ -429,7 +441,15 @@ export default function AdminTrilhaBuilder() {
       setEditingLessonTitle(newLesson.title);
       setEditingLessonParentId(parentLessonId);
       // Backend não tem endpoint para criar sublessons individualmente; salvar a trilha completa.
-      if (id) console.warn('Backend não expõe endpoint para criar subaula; salve a trilha para persistir.');
+      if (id) {
+        (async () => {
+          try {
+            await api.post(`/api/trails/${trailId}/modules/${moduleId}/lessons`, newLesson);
+          } catch (err) {
+            console.warn('POST sublesson failed, rely on PUT /api/trails to persist:', err);
+          }
+        })();
+      }
     } else {
       setActiveLessonId(newLesson.id);
       setActiveSublessonId(null);
@@ -438,7 +458,15 @@ export default function AdminTrilhaBuilder() {
       setEditingLessonTitle(newLesson.title);
       setEditingLessonParentId(null);
       // Backend não tem endpoint para criar aulas individualmente; salvar a trilha completa.
-        if (id) console.warn('Backend não expõe endpoint para criar aula; salve a trilha para persistir.');
+        if (id) {
+          (async () => {
+            try {
+              await api.post(`/api/trails/${trailId}/modules/${moduleId}/lessons`, newLesson);
+            } catch (err) {
+              console.warn('POST lesson failed, rely on PUT /api/trails to persist:', err);
+            }
+          })();
+        }
     }
     showToast('Aula criada');
   };
@@ -653,22 +681,44 @@ export default function AdminTrilhaBuilder() {
 
   const saveEditLesson = () => {
     if (!editingLessonId || !activeModuleId) return;
-    setTrailData(prev => ({
-      ...prev,
-      modules: prev.modules.map(m => {
+
+    // Compute updated trail data with the edited title so we can both update state and persist immediately
+    const updated = ((): typeof trailData => {
+      const modules = trailData.modules.map(m => {
         if (m.id !== activeModuleId) return m;
         if (!editingLessonParentId) {
           return { ...m, lessons: m.lessons.map(l => l.id === editingLessonId ? { ...l, title: editingLessonTitle } : l) };
         }
         return { ...m, lessons: m.lessons.map(l => l.id === editingLessonParentId ? { ...l, sublessons: (l.sublessons || []).map(s => s.id === editingLessonId ? { ...s, title: editingLessonTitle } : s) } : l) };
-      })
-    }));
+      });
+      return { ...trailData, modules };
+    })();
+
+    setTrailData(updated);
     setIsDirty(true);
-    // Backend não expõe endpoints para renomear itens individualmente; use PUT /api/trails/{id} (Salvar)
-    if (id && activeModuleId) {
+
+    // If this trail exists on the server, try to persist immediately to avoid relying only on autosave
+    if (id) {
+      (async () => {
+        setSaving(true);
+        try {
+          const finalData: Trail = { id: trailId, ...updated };
+          await api.put(`/api/trails/${trailId}`, finalData);
+          setLastSaved(new Date());
+          setIsDirty(false);
+          showToast('Título salvo');
+        } catch (err) {
+          console.error('Erro salvando título imediatamente:', err);
+          showToast('Erro ao salvar título — salve a trilha manualmente');
+        } finally {
+          setSaving(false);
+        }
+      })();
+    } else {
       console.warn('Renomeio aplicado localmente. Salve a trilha para persistir o novo título no backend.');
       showToast('Título atualizado localmente — salve a trilha para persistir');
     }
+
     setEditingLessonId(null);
     setEditingLessonTitle('');
     setEditingLessonParentId(null);
@@ -737,9 +787,13 @@ export default function AdminTrilhaBuilder() {
   };
 
   const genBlock = (html: string, type = 'custom') => {
-    const id = `b-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const id = `b-${genId()}`;
     const safe = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false });
     return `<!-- block:${type}:${id} -->\n${safe}\n<!-- /block:${type}:${id} -->`;
+  };
+
+  const genId = () => {
+    try { return crypto.randomUUID(); } catch { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
   };
 
   const parseBlocks = (content: string) => {
@@ -756,7 +810,23 @@ export default function AdminTrilhaBuilder() {
     const content = activeLesson?.content || '';
     const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
     if (blocks.length === 0) {
-      return <div className="text-sm text-slate-400">Nenhum bloco detectado.</div>;
+      return (
+        <div className="text-center p-8 text-slate-400">
+          <div dangerouslySetInnerHTML={{ __html: createLogoContent() }} />
+          <div className="mt-4">
+            <button
+              className="px-4 py-2 bg-faktory-blue text-white rounded"
+              onClick={() => {
+                // open block editor so user can add components
+                setEditingLessonId(activeLesson?.id || null);
+                setShowBlockEditor(true);
+              }}
+            >
+              Clique para adicionar conteúdo
+            </button>
+          </div>
+        </div>
+      );
     }
 
     return (
@@ -955,9 +1025,17 @@ export default function AdminTrilhaBuilder() {
             <ArrowLeft size={18} className="text-slate-500" />
           </button>
           <div className="flex items-center gap-2">
-            <h1 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-              {trailData.title || 'Nova Trilha'}
-            </h1>
+            <input
+              className="text-sm font-bold text-slate-700 uppercase tracking-wider bg-transparent outline-none w-64"
+              value={trailData.title}
+              placeholder="Nova Trilha"
+              onChange={(e) => {
+                const title = e.target.value;
+                setTrailData(prev => ({ ...prev, title }));
+                setIsDirty(true);
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); } }}
+            />
             <span className="text-slate-300">|</span>
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-bold text-slate-400 uppercase">Tipo da página:</span>
