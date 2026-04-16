@@ -1,28 +1,38 @@
 import { useEffect, useState } from 'react';
 import { Plus, Search, MoreVertical, BookOpen, Loader2 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { api } from '../../utils/api';
 import { Trail } from '../../@types';
+import { useAuthStore } from '../../hooks/store/useAuthStore';
 
 export default function AdminTrilhas() {
   const [trails, setTrails] = useState<Trail[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const { user } = useAuthStore();
+  const location = useLocation();
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  useEffect(() => {
-    async function fetchTrails() {
-      try {
-        const trailsData = await api.get<Trail[]>('/api/trails');
-        setTrails(trailsData);
-      } catch (error) {
-        console.error('Error fetching trails:', error);
-      } finally {
-        setLoading(false);
-      }
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  const fetchTrails = async () => {
+    setLoading(true);
+    try {
+      const trailsData = await api.get<Trail[]>('/api/trails');
+      setTrails(trailsData);
+    } catch (error) {
+      console.error('Error fetching trails:', error);
+      showToast('error', 'Erro ao carregar trilhas. Veja o console.');
+    } finally {
+      setLoading(false);
     }
+  };
 
-    fetchTrails();
-  }, []);
+  useEffect(() => { fetchTrails(); }, [location.key]);
 
   const filteredTrails = trails.filter(t => 
     t.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -79,9 +89,38 @@ export default function AdminTrilhas() {
                   <div className="w-12 h-12 bg-white rounded-lg shadow-sm border border-slate-100 flex items-center justify-center text-faktory-blue">
                     <BookOpen size={24} />
                   </div>
-                  <button className="p-1 text-slate-300 hover:text-slate-600">
-                    <MoreVertical size={18} />
-                  </button>
+                  <div className="relative">
+                    <button onClick={() => setOpenMenuId(openMenuId === trail.id ? null : trail.id)} className="p-1 text-slate-300 hover:text-slate-600">
+                      <MoreVertical size={18} />
+                    </button>
+
+                    {openMenuId === trail.id && (
+                      <div className="absolute right-0 mt-2 w-40 bg-white border border-slate-200 rounded-md shadow-lg z-50">
+                        <Link to={`/admin/trilhas/${trail.id}`} className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Visualizar</Link>
+                        {user?.role === 'superadmin' && (
+                          <button
+                            className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-slate-50"
+                            onClick={async () => {
+                              const confirmDelete = window.confirm('Remover trilha? Esta ação é irreversível.');
+                              if (!confirmDelete) return;
+                              try {
+                                await api.delete(`/api/trails/${trail.id}`);
+                                await fetchTrails();
+                                setOpenMenuId(null);
+                                showToast('success', 'Trilha removida com sucesso.');
+                              } catch (err: any) {
+                                console.error('Erro removendo trilha:', err);
+                                const msg = err?.message || 'Erro ao remover trilha.';
+                                showToast('error', msg);
+                              }
+                            }}
+                          >
+                            Remover
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="p-6">
                   <h3 className="font-bold text-slate-800 mb-2">{trail.title}</h3>
@@ -102,6 +141,11 @@ export default function AdminTrilhas() {
               </div>
             ))
           )}
+        </div>
+      )}
+      {toast && (
+        <div className={`fixed right-4 bottom-6 z-50 px-4 py-2 rounded shadow-lg ${toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+          {toast.message}
         </div>
       )}
     </div>
