@@ -4,12 +4,21 @@ import { Link } from 'react-router-dom';
 import { api } from '../../utils/api';
 import { Company } from '../../@types';
 import { fetchAddressByCEP, formatCEP, formatCNPJ, isValidCNPJ, onlyDigits, validateCNPJExists } from '../../utils/validators';
+import { useAuthStore } from '../../hooks/store/useAuthStore';
 
 export default function AdminClientes() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const { user } = useAuthStore();
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 3500);
+  };
   const [newCompany, setNewCompany] = useState({
     name: '',
     cnpj: '',
@@ -180,9 +189,43 @@ export default function AdminClientes() {
                         >
                           Gerenciar
                         </Link>
-                        <button className="p-1 text-slate-400 hover:text-slate-600">
-                          <MoreVertical size={18} />
-                        </button>
+                        <div className="relative">
+                          <button onClick={() => setOpenMenuId(openMenuId === company.id ? null : company.id)} className="p-1 text-slate-400 hover:text-slate-600">
+                            <MoreVertical size={18} />
+                          </button>
+
+                          {openMenuId === company.id && (
+                            <div className="absolute right-0 mt-2 w-44 bg-white border border-slate-200 rounded-md shadow-lg z-50">
+                              <Link to={`/admin/clientes/${company.id}`} className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Visualizar</Link>
+                              {user?.role === 'superadmin' && (
+                                <button
+                                  className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-slate-50"
+                                  onClick={async () => {
+                                    const confirmDelete = window.confirm('Remover empresa? Esta ação removerá a empresa do sistema.');
+                                    if (!confirmDelete) return;
+                                    try {
+                                      await api.delete(`/api/companies/${company.id}`);
+                                      await fetchCompanies();
+                                      setOpenMenuId(null);
+                                      showToast('success', 'Empresa removida com sucesso.');
+                                    } catch (err: any) {
+                                      console.error('Erro removendo empresa:', err);
+                                      showToast('error', err?.message || 'Erro ao remover empresa.');
+                                    }
+                                  }}
+                                >
+                                  Remover
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {toast && (
+                          <div className={`fixed right-4 bottom-6 z-50 px-4 py-2 rounded shadow-lg ${toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+                            {toast.message}
+                          </div>
+                        )}
                       </div>
                     </td>
                   </tr>
