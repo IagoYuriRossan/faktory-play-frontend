@@ -19,6 +19,7 @@ import AdminProjetos from '../pages/admin/Projetos';
 import AdminRelatorios from '../pages/admin/Relatorios';
 import AdminConfiguracoes from '../pages/admin/Configuracoes';
 import PlaceholderPage from '../pages/admin/Placeholder';
+import Cronograma from '../pages/admin/Cronograma';
 
 // Empresa (company_admin) Pages
 import EmpresaDashboard from '../pages/empresa/Dashboard';
@@ -93,6 +94,7 @@ export default function AppRoutes() {
         <Route path="alocacao" element={<PlaceholderPage title="Alocação de Recursos" />} />
         <Route path="trilhas" element={<AdminTrilhas />} />
         <Route path="questionarios" element={<PlaceholderPage title="Questionários" />} />
+        <Route path="projects/:projectId/cronograma" element={<Cronograma />} />
         <Route path="paginas" element={<PlaceholderPage title="Páginas Customizáveis" />} />
         <Route path="trilhas/nova" element={<AdminTrilhaBuilder />} />
         <Route path="trilhas/:id" element={<AdminTrilhaBuilder />} />
@@ -112,6 +114,7 @@ export default function AppRoutes() {
         <Route index element={<EmpresaDashboard />} />
         <Route path="projetos" element={<EmpresaProjetos />} />
         <Route path="membros" element={<EmpresaMembros />} />
+        <Route path="projetos/:projectId/cronograma" element={<Cronograma />} />
       </Route>
 
       {/* Student Routes */}
