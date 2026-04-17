@@ -34,6 +34,7 @@ export interface Lesson {
   title: string;
   videoUrl: string;
   content: string;
+  questionnaireId?: string;
   imageUrl?: string;
   imageOptions?: { size?: 'small' | 'medium' | 'full' };
   quiz?: Quiz;
