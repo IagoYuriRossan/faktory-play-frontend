@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../../utils/api';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
+import { useQuestionnaire, startAttempt, submitAttempt } from '../../hooks/useQuestionnaire';
 import { Trail, Lesson, Enrollment } from '../../@types';
 import { 
   ArrowLeft, 
@@ -30,6 +31,10 @@ export default function AlunoAulaPlayer() {
   const [needAuth, setNeedAuth] = useState(false);
   const [quizAnswer, setQuizAnswer] = useState<number | null>(null);
   const [showQuizResult, setShowQuizResult] = useState(false);
+  const [showQuestionnaire, setShowQuestionnaire] = useState(false);
+  const [attemptId, setAttemptId] = useState<string | null>(null);
+  const [answersMap, setAnswersMap] = useState<Record<string, any>>({});
+  const [submitResult, setSubmitResult] = useState<any>(null);
   const [expandedModules, setExpandedModules] = useState<string[]>([]);
 
   useEffect(() => {
@@ -185,6 +190,181 @@ export default function AlunoAulaPlayer() {
       }
     }
   };
+
+  // Inline component to run backend questionnaire flows
+  function QuestionnaireRunner({
+    questionnaireId,
+    projectId,
+    userId,
+    onClose,
+    onSubmitted,
+  }: {
+    questionnaireId: string;
+    projectId?: string;
+    userId?: string;
+    onClose: () => void;
+    onSubmitted?: (res: any) => void;
+  }) {
+    const { questionnaire, loading: qLoading, error, reload } = useQuestionnaire(questionnaireId);
+    const [localAttemptId, setLocalAttemptId] = useState<string | null>(null);
+    const [localAnswers, setLocalAnswers] = useState<Record<string, any>>({});
+    const [starting, setStarting] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const [result, setResult] = useState<any>(null);
+
+    const handleStart = async () => {
+      setStarting(true);
+      try {
+        const res = await startAttempt(questionnaireId);
+        setLocalAttemptId(res.attemptId);
+      } catch (e) {
+        console.error('start attempt error', e);
+      } finally {
+        setStarting(false);
+      }
+    };
+
+    const handleChangeOption = (questionId: string, optionId: string, type: string) => {
+      setLocalAnswers(prev => {
+        const cur = { ...prev };
+        if (type === 'single_choice') {
+          cur[questionId] = [optionId];
+        } else if (type === 'multiple_choice') {
+          const arr: string[] = Array.isArray(cur[questionId]) ? [...cur[questionId]] : [];
+          if (arr.includes(optionId)) {
+            cur[questionId] = arr.filter(a => a !== optionId);
+          } else {
+            arr.push(optionId);
+            cur[questionId] = arr;
+          }
+        }
+        return cur;
+      });
+    };
+
+    const handleChangeText = (questionId: string, text: string) => {
+      setLocalAnswers(prev => ({ ...prev, [questionId]: text }));
+    };
+
+    const handleSubmit = async () => {
+      if (!localAttemptId) return;
+      setSubmitting(true);
+      try {
+        const answers = Object.keys(localAnswers).map(qid => {
+          const val = localAnswers[qid];
+          if (Array.isArray(val)) return { questionId: qid, selectedOptionIds: val };
+          const isString = typeof val === 'string';
+          if (isString) return { questionId: qid, textAnswer: val };
+          return { questionId: qid, selectedOptionIds: val };
+        });
+        const res = await submitAttempt(localAttemptId, answers);
+        // mark open questions as pending in UI if any
+        const enriched = { ...res };
+        if (questionnaire && questionnaire.questions) {
+          enriched.perQuestion = (enriched.perQuestion || []).map((pq: any) => {
+            const q = questionnaire.questions.find(x => x.id === pq.questionId);
+            if (q && q.type === 'open') {
+              return { ...pq, pendingCorrection: true };
+            }
+            return pq;
+          });
+        }
+        setResult(enriched);
+        // After submission, refresh user and project progress and notify listeners
+        try {
+          if (projectId && userId) {
+            await api.get(`/api/projects/${encodeURIComponent(projectId)}/users/${encodeURIComponent(userId)}/progress`);
+            await api.get(`/api/projects/${encodeURIComponent(projectId)}/progress`);
+            // notify other components (Cronograma) to reload
+            try { window.dispatchEvent(new CustomEvent('project:progress-updated', { detail: { projectId } })); } catch(e) { /* ignore */ }
+          }
+        } catch (e) {
+          // ignore errors on refresh
+        }
+        if (onSubmitted) onSubmitted(enriched);
+      } catch (e) {
+        console.error('submit error', e);
+      } finally {
+        setSubmitting(false);
+      }
+    };
+
+    return (
+      <div className="bg-white rounded-lg border border-slate-200 p-4 mt-4">
+        {qLoading && <div>Carregando questionário...</div>}
+        {error && <div className="text-red-500">Erro ao carregar o questionário.</div>}
+        {questionnaire && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="font-bold">{questionnaire.title}</div>
+                <div className="text-xs text-slate-500">{questionnaire.description}</div>
+              </div>
+              <div className="text-xs text-slate-400">{localAttemptId ? 'Tentativa iniciada' : 'Pronto'}</div>
+            </div>
+
+            {!localAttemptId && (
+              <div className="flex gap-2">
+                <button onClick={handleStart} className="bg-faktory-blue text-white px-4 py-2 rounded font-bold" disabled={starting}>
+                  {starting ? 'Iniciando...' : 'Começar'}
+                </button>
+                <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+              </div>
+            )}
+
+            {localAttemptId && !result && (
+              <div className="mt-4 space-y-4">
+                {questionnaire.questions.map(q => (
+                  <div key={q.id} className="p-3 border rounded bg-slate-50">
+                    <div className="font-medium mb-2">{q.text}</div>
+                    {q.type === 'open' && (
+                      <textarea
+                        className="w-full p-2 border rounded"
+                        value={localAnswers[q.id] || ''}
+                        onChange={e => handleChangeText(q.id, e.target.value)}
+                      />
+                    )}
+                    {(q.type === 'single_choice' || q.type === 'multiple_choice') && (
+                      <div className="space-y-2">
+                        {q.options?.map(opt => (
+                          <label key={opt.id} className="flex items-center gap-2">
+                            <input
+                              type={q.type === 'single_choice' ? 'radio' : 'checkbox'}
+                              name={q.id}
+                              checked={Array.isArray(localAnswers[q.id]) ? localAnswers[q.id].includes(opt.id) : localAnswers[q.id]?.[0] === opt.id}
+                              onChange={() => handleChangeOption(q.id, opt.id, q.type)}
+                            />
+                            <span>{opt.text}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                <div className="flex items-center gap-2">
+                  <button onClick={handleSubmit} disabled={submitting} className="bg-green-600 text-white px-4 py-2 rounded font-bold">
+                    {submitting ? 'Enviando...' : 'Enviar respostas'}
+                  </button>
+                  <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+                </div>
+              </div>
+            )}
+
+            {result && (
+              <div className="mt-4 p-3 bg-white border rounded">
+                <div className="font-bold">Resultado</div>
+                <div className="text-sm">Score: {result.score} / {result.maxScore}</div>
+                <div className="mt-2">
+                  <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -364,75 +544,137 @@ export default function AlunoAulaPlayer() {
 
             <div className="prose prose-slate max-w-none">
               <div 
-                className="text-slate-600 text-sm leading-relaxed space-y-6"
+                className="text-slate-600 text-sm leading-relaxed space-y-6 rich-text-content"
                 dangerouslySetInnerHTML={{ __html: currentLesson.content }}
               />
             </div>
 
-            {/* Quiz Section */}
-            {currentLesson.quiz && (
+            {/* Quiz Section: if lesson links to backend questionnaire use that flow, otherwise fallback to local quiz */}
+            {currentLesson.questionnaireId ? (
               <div className="mt-16 bg-slate-50 p-8 rounded-2xl border border-slate-100">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 bg-faktory-blue/10 text-faktory-blue rounded-xl flex items-center justify-center">
                     <HelpCircle size={20} />
                   </div>
                   <div>
-                    <h3 className="font-bold text-slate-800">Validação de Conhecimento</h3>
-                    <p className="text-xs text-slate-500">Responda para concluir esta aula</p>
+                    <h3 className="font-bold text-slate-800">Avaliação</h3>
+                    <p className="text-xs text-slate-500">Clique em "Fazer questionário" para iniciar</p>
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  <p className="text-sm font-bold text-slate-700 mb-4">{currentLesson.quiz.question}</p>
-                  <div className="grid gap-3">
-                    {currentLesson.quiz.options.map((option, index) => (
-                      <label 
-                        key={index} 
-                        className={cn(
-                          "flex items-center gap-4 p-4 rounded-xl cursor-pointer transition-all border",
-                          quizAnswer === index 
-                            ? "bg-white border-faktory-blue ring-1 ring-faktory-blue shadow-sm" 
-                            : "bg-white border-slate-200 hover:border-faktory-blue/50"
-                        )}
+                {!showQuestionnaire && (
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-slate-600">Questionário vinculado a esta lição</div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          setShowQuestionnaire(true);
+                        }}
+                        className="bg-faktory-blue text-white px-4 py-2 rounded-lg font-bold"
                       >
-                        <div className={cn(
-                          "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
-                          quizAnswer === index ? "border-faktory-blue bg-faktory-blue" : "border-slate-300"
-                        )}>
-                          {quizAnswer === index && <div className="w-2 h-2 bg-white rounded-full"></div>}
+                        Fazer questionário
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {showQuestionnaire && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center">
+                    <div className="absolute inset-0 bg-black/40" onClick={() => { setShowQuestionnaire(false); }} />
+                    <div className="relative z-60 w-[95%] max-w-3xl">
+                      <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+                        <div className="p-4 border-b flex items-center justify-between">
+                          <div className="font-bold">Questionário</div>
+                          <button onClick={() => { setShowQuestionnaire(false); setAttemptId(null); setSubmitResult(null); setAnswersMap({}); }} className="text-slate-500 px-2 py-1">Fechar</button>
                         </div>
-                        <input 
-                          type="radio" 
-                          name="quiz" 
-                          onChange={() => setQuizAnswer(index)}
-                          checked={quizAnswer === index}
-                          className="hidden" 
-                        />
-                        <span className="text-sm font-medium text-slate-700">{option}</span>
-                      </label>
-                    ))}
+                        <div className="p-4">
+                          <QuestionnaireRunner
+                            questionnaireId={currentLesson.questionnaireId}
+                            projectId={trail.id}
+                            userId={user.id}
+                            onClose={() => { setShowQuestionnaire(false); setAttemptId(null); setSubmitResult(null); setAnswersMap({}); }}
+                            onSubmitted={async (res: any) => {
+                              setSubmitResult(res);
+                              // refresh user's progress for this trail
+                              try {
+                                const updated = await api.get<any>(`/api/projects/${encodeURIComponent(trail.id)}/users/${encodeURIComponent(user.id)}/progress`);
+                                setEnrollment(prev => prev ? { ...prev, progress: updated.completionRate * 100 } : prev);
+                              } catch (e) {
+                                // ignore
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              currentLesson.quiz && (
+                <div className="mt-16 bg-slate-50 p-8 rounded-2xl border border-slate-100">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 bg-faktory-blue/10 text-faktory-blue rounded-xl flex items-center justify-center">
+                      <HelpCircle size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-800">Validação de Conhecimento</h3>
+                      <p className="text-xs text-slate-500">Responda para concluir esta aula</p>
+                    </div>
                   </div>
 
-                  <div className="flex items-center justify-between mt-8 pt-6 border-t border-slate-200">
-                    <button 
-                      onClick={handleQuizSubmit}
-                      disabled={quizAnswer === null}
-                      className="bg-faktory-blue text-white px-8 py-3 rounded-xl font-bold text-sm hover:bg-[#2c6a9a] disabled:opacity-50 transition-all shadow-lg shadow-blue-200"
-                    >
-                      Confirmar Resposta
-                    </button>
-                    
-                    {showQuizResult && (
-                      <div className={cn(
-                        "px-6 py-3 rounded-xl text-sm font-bold animate-in fade-in slide-in-from-bottom-2",
-                        quizAnswer === currentLesson.quiz.correctIndex ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-                      )}>
-                        {quizAnswer === currentLesson.quiz.correctIndex ? "✓ Resposta correta!" : "✗ Tente novamente."}
-                      </div>
-                    )}
+                  <div className="space-y-4">
+                    <p className="text-sm font-bold text-slate-700 mb-4">{currentLesson.quiz.question}</p>
+                    <div className="grid gap-3">
+                      {currentLesson.quiz.options.map((option, index) => (
+                        <label 
+                          key={index} 
+                          className={cn(
+                            "flex items-center gap-4 p-4 rounded-xl cursor-pointer transition-all border",
+                            quizAnswer === index 
+                              ? "bg-white border-faktory-blue ring-1 ring-faktory-blue shadow-sm" 
+                              : "bg-white border-slate-200 hover:border-faktory-blue/50"
+                          )}
+                        >
+                          <div className={cn(
+                            "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
+                            quizAnswer === index ? "border-faktory-blue bg-faktory-blue" : "border-slate-300" 
+                          )}>
+                            {quizAnswer === index && <div className="w-2 h-2 bg-white rounded-full"></div>}
+                          </div>
+                          <input 
+                            type="radio" 
+                            name="quiz" 
+                            onChange={() => setQuizAnswer(index)}
+                            checked={quizAnswer === index}
+                            className="hidden" 
+                          />
+                          <span className="text-sm font-medium text-slate-700">{option}</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between mt-8 pt-6 border-t border-slate-200">
+                      <button 
+                        onClick={handleQuizSubmit}
+                        disabled={quizAnswer === null}
+                        className="bg-faktory-blue text-white px-8 py-3 rounded-xl font-bold text-sm hover:bg-[#2c6a9a] disabled:opacity-50 transition-all shadow-lg shadow-blue-200"
+                      >
+                        Confirmar Resposta
+                      </button>
+                      
+                      {showQuizResult && (
+                        <div className={cn(
+                          "px-6 py-3 rounded-xl text-sm font-bold animate-in fade-in slide-in-from-bottom-2",
+                          quizAnswer === currentLesson.quiz.correctIndex ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                        )}>
+                          {quizAnswer === currentLesson.quiz.correctIndex ? "✓ Resposta correta!" : "✗ Tente novamente."}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )
             )}
           </div>
         </main>

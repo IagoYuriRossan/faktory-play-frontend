@@ -6,7 +6,7 @@ import {
   Layout, Image as ImageIcon, Type, Code, Layers,
   Eye, Search, Bell, User as UserIcon, Minus, Maximize2,
   RefreshCw, MousePointer2, Settings,
-  GripVertical, Copy, Pencil
+  GripVertical, Copy, Pencil, Undo2, Redo2
 } from 'lucide-react';
 import { api } from '../../utils/api';
 import { auth } from '../../utils/firebase';
@@ -29,9 +29,215 @@ export default function AdminTrilhaBuilder() {
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<number | null>(null);
   const [showBlockEditor, setShowBlockEditor] = useState(false);
+  const [titleHovered, setTitleHovered] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const [editingBlockIdState, setEditingBlockIdState] = useState<string | null>(null);
   const [editingBlockHtmlState, setEditingBlockHtmlState] = useState<string>('');
+  const [editingBlockTypeState, setEditingBlockTypeState] = useState<string>('');
+  const [useWysiwygEditor, setUseWysiwygEditor] = useState<boolean>(true);
+  const wysiwygRef = useRef<HTMLDivElement | null>(null);
+  // Track which block is loaded into the contentEditable to avoid resetting innerHTML on every render
+  const wysiwygLoadedBlockRef = useRef<string | null>(null);
+  const editorHistoryRef = useRef<string[]>([]);
+  const editorHistoryIndexRef = useRef<number>(-1);
+  const editorLiveHtmlRef = useRef<string>('');
+  const editorHistoryTimerRef = useRef<number | null>(null);
+  const editorSelectionRef = useRef<Range | null>(null);
+  const [, setEditorHistoryVersion] = useState(0);
+
+  const saveEditorSelection = () => {
+    const editor = wysiwygRef.current;
+    if (!editor) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return;
+    editorSelectionRef.current = range.cloneRange();
+  };
+
+  const restoreEditorSelection = () => {
+    const editor = wysiwygRef.current;
+    const saved = editorSelectionRef.current;
+    if (!editor || !saved) return false;
+    if (!editor.contains(saved.startContainer) || !editor.contains(saved.endContainer)) return false;
+    const sel = window.getSelection();
+    if (!sel) return false;
+    sel.removeAllRanges();
+    sel.addRange(saved);
+    return true;
+  };
+
+  const applyHistoryContent = (value: string) => {
+    setEditingBlockHtmlState(value);
+    if (useWysiwygEditor && wysiwygRef.current) {
+      wysiwygRef.current.innerHTML = value;
+    }
+  };
+
+  const initEditorHistory = (initialValue: string) => {
+    if (editorHistoryTimerRef.current) {
+      window.clearTimeout(editorHistoryTimerRef.current);
+      editorHistoryTimerRef.current = null;
+    }
+    editorHistoryRef.current = [initialValue];
+    editorHistoryIndexRef.current = 0;
+    editorLiveHtmlRef.current = initialValue;
+    setEditorHistoryVersion(v => v + 1);
+  };
+
+  const pushEditorHistory = (nextValue: string) => {
+    const history = editorHistoryRef.current;
+    const idx = editorHistoryIndexRef.current;
+    if (idx >= 0 && history[idx] === nextValue) return;
+    const trimmed = history.slice(0, idx + 1);
+    trimmed.push(nextValue);
+    const maxHistory = 100;
+    if (trimmed.length > maxHistory) {
+      trimmed.shift();
+    }
+    editorHistoryRef.current = trimmed;
+    editorHistoryIndexRef.current = trimmed.length - 1;
+    setEditorHistoryVersion(v => v + 1);
+  };
+
+  const flushEditorHistory = () => {
+    if (editorHistoryTimerRef.current) {
+      window.clearTimeout(editorHistoryTimerRef.current);
+      editorHistoryTimerRef.current = null;
+      pushEditorHistory(editorLiveHtmlRef.current);
+    }
+  };
+
+  const scheduleEditorHistoryPush = (value: string) => {
+    editorLiveHtmlRef.current = value;
+    if (editorHistoryTimerRef.current) {
+      window.clearTimeout(editorHistoryTimerRef.current);
+    }
+    editorHistoryTimerRef.current = window.setTimeout(() => {
+      editorHistoryTimerRef.current = null;
+      pushEditorHistory(editorLiveHtmlRef.current);
+    }, 200);
+  };
+
+  const canUndoEditor = () => editorHistoryIndexRef.current > 0;
+  const canRedoEditor = () => editorHistoryIndexRef.current < editorHistoryRef.current.length - 1;
+
+  const handleUndoEditor = () => {
+    flushEditorHistory();
+    if (!canUndoEditor()) return;
+    editorHistoryIndexRef.current -= 1;
+    applyHistoryContent(editorHistoryRef.current[editorHistoryIndexRef.current]);
+  };
+
+  const handleRedoEditor = () => {
+    flushEditorHistory();
+    if (!canRedoEditor()) return;
+    editorHistoryIndexRef.current += 1;
+    applyHistoryContent(editorHistoryRef.current[editorHistoryIndexRef.current]);
+  };
+
+  const handleEditorValueChange = (nextValue: string) => {
+    editorLiveHtmlRef.current = nextValue;
+    setEditingBlockHtmlState(nextValue);
+    pushEditorHistory(nextValue);
+  };
+
+  const handleWysiwygInput = (nextValue: string) => {
+    editorLiveHtmlRef.current = nextValue;
+    scheduleEditorHistoryPush(nextValue);
+  };
+
+  // Populate contentEditable innerHTML only when the editing block changes (not on every render)
+  useEffect(() => {
+    if (useWysiwygEditor && wysiwygRef.current && editingBlockIdState && editingBlockIdState !== wysiwygLoadedBlockRef.current) {
+      wysiwygRef.current.innerHTML = editingBlockHtmlState;
+      wysiwygLoadedBlockRef.current = editingBlockIdState;
+    }
+  }, [editingBlockIdState, useWysiwygEditor]);
+  // Also sync when toggling from source to WYSIWYG view
+  useEffect(() => {
+    if (useWysiwygEditor && wysiwygRef.current && editingBlockIdState) {
+      wysiwygRef.current.innerHTML = editingBlockHtmlState;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useWysiwygEditor]);
+
+  useEffect(() => {
+    if (!showBlockEditor) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === 'z' && e.shiftKey) {
+        e.preventDefault();
+        handleRedoEditor();
+        return;
+      }
+      if (key === 'z') {
+        e.preventDefault();
+        handleUndoEditor();
+        return;
+      }
+      if (key === 'y') {
+        e.preventDefault();
+        handleRedoEditor();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [showBlockEditor, useWysiwygEditor]);
+
+  useEffect(() => {
+    return () => {
+      if (editorHistoryTimerRef.current) {
+        window.clearTimeout(editorHistoryTimerRef.current);
+      }
+    };
+  }, []);
+
+  const execCommand = (cmd: string, value?: string) => {
+    const editor = wysiwygRef.current;
+    if (!editor) return;
+
+    let sel = window.getSelection();
+    if (!sel) return;
+
+    // Ensure editor is focused
+    if (document.activeElement !== editor && !editor.contains(document.activeElement)) {
+      editor.focus();
+    }
+
+    // Restore the last user cursor/selection from the editor to avoid formatting the wrong line
+    restoreEditorSelection();
+    sel = window.getSelection();
+    if (!sel) return;
+
+    // Ensure we have a selection range inside the editor
+    if (sel.rangeCount === 0 || !editor.contains(sel.anchorNode)) {
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+
+    // ── LIST COMMANDS: use native browser behavior to respect caret/selection ──
+    if (cmd === 'insertUnorderedList' || cmd === 'insertOrderedList') {
+      try { document.execCommand(cmd, false, ''); } catch (_) { /* noop */ }
+      const html = editor.innerHTML;
+      editorLiveHtmlRef.current = html;
+      setEditingBlockHtmlState(html);
+      pushEditorHistory(html);
+      saveEditorSelection();
+      return;
+    }
+
+    // ── OTHER COMMANDS: use native execCommand ──
+    try {
+      document.execCommand(cmd, false, value ?? '');
+      saveEditorSelection();
+    } catch (_) { /* noop */ }
+  };
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [imageUploading, setImageUploading] = useState(false);
@@ -558,7 +764,13 @@ export default function AdminTrilhaBuilder() {
     const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
     const html = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
     const block = genBlock(html, 'video');
+    console.debug('[insertVideoAsBlock] embed=', embed);
+    console.debug('[insertVideoAsBlock] block=', block);
     updateLesson({ content: (activeLesson.content || '') + '\n' + block, videoUrl: '' });
+    // Log content after small timeout to allow state update
+    setTimeout(() => {
+      console.debug('[insertVideoAsBlock] after update, activeLesson.content=', getActiveLesson()?.content);
+    }, 50);
     setShowVideoModal(false);
     showToast('Vídeo movido para o conteúdo como bloco');
   };
@@ -571,6 +783,7 @@ export default function AdminTrilhaBuilder() {
   const dragTitleRef = useRef<boolean>(false);
   const dragPageTitleRef = useRef<boolean>(false);
   const dragImageRef = useRef<string | null>(null);
+  const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const blocksAreaRef = useRef<HTMLDivElement | null>(null);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -739,20 +952,34 @@ export default function AdminTrilhaBuilder() {
 
   const updateLesson = (updates: Partial<Lesson>) => {
     if (!activeModuleId || !activeLessonId) return;
+    console.debug('[updateLesson] activeModuleId=', activeModuleId, 'activeLessonId=', activeLessonId, 'updates=', updates);
+    // show current lesson content before update
+    try {
+      console.debug('[updateLesson] before content=', getActiveLesson()?.content);
+    } catch (e) { /* noop */ }
     setTrailData(prev => ({
       ...prev,
       modules: prev.modules.map(m => {
         if (m.id !== activeModuleId) return m;
-        // update top-level lesson
-        const top = m.lessons.find(l => l.id === activeLessonId);
-        if (top) {
-          return { ...m, lessons: m.lessons.map(l => l.id === activeLessonId ? { ...l, ...updates } : l) };
+        // If a sublesson is active, update that sublesson inside its parent lesson
+        if (activeSublessonId) {
+          return {
+            ...m,
+            lessons: m.lessons.map(l => l.id === activeLessonId ? { ...l, sublessons: (l.sublessons || []).map(s => s.id === activeSublessonId ? { ...s, ...updates } : s) } : l)
+          };
         }
-        // otherwise try sublessons
-        return { ...m, lessons: m.lessons.map(l => ({ ...l, sublessons: (l.sublessons || []).map(s => s.id === activeSublessonId ? { ...s, ...updates } : s) })) };
+        // Otherwise update the top-level lesson
+        return { ...m, lessons: m.lessons.map(l => l.id === activeLessonId ? { ...l, ...updates } : l) };
       })
     }));
     setIsDirty(true);
+    // log trailData after state update (allow React to flush)
+    setTimeout(() => {
+      try {
+        console.debug('[updateLesson] after update, getActiveLesson().content=', getActiveLesson()?.content);
+        console.debug('[updateLesson] after update, trailData.modules=', trailData.modules.map(m => ({ id: m.id, lessonsCount: m.lessons.length })));
+      } catch (e) { /* noop */ }
+    }, 200);
   };
 
   const getActiveLesson = () => {
@@ -766,6 +993,13 @@ export default function AdminTrilhaBuilder() {
       }
     }
     return module.lessons.find(l => l.id === activeLessonId) || null;
+  };
+
+  const getActiveLessonTitleHtml = () => {
+    const al = getActiveLesson();
+    if (!al) return '';
+    // Prefer HTML-preserved title if present, otherwise wrap plain title in H2
+    return (al as any).titleHtml || (al.title ? `<h2>${al.title}</h2>` : '');
   };
 
   const getEmbedUrl = (url: string) => {
@@ -794,7 +1028,11 @@ export default function AdminTrilhaBuilder() {
 
   const genBlock = (html: string, type = 'custom') => {
     const id = `b-${genId()}`;
-    const safe = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false });
+    const sanitizeOpts: Parameters<typeof DOMPurify.sanitize>[1] =
+      (type === 'video' || type === 'embed')
+        ? { WHOLE_DOCUMENT: false, ADD_TAGS: ['iframe'], ADD_ATTR: ['src', 'width', 'height', 'frameborder', 'allowfullscreen', 'allow', 'title'] }
+        : { WHOLE_DOCUMENT: false };
+    const safe = DOMPurify.sanitize(html, sanitizeOpts);
     return `<!-- block:${type}:${id} -->\n${safe}\n<!-- /block:${type}:${id} -->`;
   };
 
@@ -901,6 +1139,7 @@ export default function AdminTrilhaBuilder() {
   const renderBlockList = () => {
     const content = activeLesson?.content || '';
     const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
+    console.debug('[renderBlockList] content length=', content.length, 'blocks=', blocks.map((x:any)=>({ id: x.id, type: x.type, index: x.index })));
     if (blocks.length === 0) {
       return (
         <div className="text-center p-8 text-slate-400">
@@ -1034,8 +1273,9 @@ export default function AdminTrilhaBuilder() {
                     setDragPreview({ type: 'none' });
                     return;
                   }
-                  if (dragTitleRef.current && activeLesson && activeLesson.title) {
-                    const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
+                    if (dragTitleRef.current && activeLesson) {
+                    const titleHtml = getActiveLessonTitleHtml();
+                    const block = genBlock(titleHtml, 'title');
                     const content = activeLesson.content || '';
                     const parsed = parseBlocks(content).sort((a: any, b: any) => a.index - b.index);
                     const idx = parsed.findIndex((x: any) => x.id === b.id);
@@ -1049,7 +1289,7 @@ export default function AdminTrilhaBuilder() {
                     parts.push(content.slice(last));
                     const insertAt = pos === 'before' ? (idx * 2) : (idx * 2 + 2);
                     parts.splice(insertAt, 0, block);
-                    updateLesson({ content: parts.join(''), title: '' });
+                    updateLesson({ content: parts.join(''), title: '' } as any);
                     dragTitleRef.current = false;
                     setDragPreview({ type: 'none' });
                     showToast('Título movido para o conteúdo');
@@ -1089,7 +1329,15 @@ export default function AdminTrilhaBuilder() {
                 )}
                 {/* ── Preview do conteúdo ── */}
                 <div className="p-3">
-                  <div className="text-xs text-slate-400 line-clamp-3" dangerouslySetInnerHTML={{ __html: b.html }} />
+                  { (b.type === 'video' || b.type === 'embed' || b.type === 'title') ? (
+                    <div className="w-full" dangerouslySetInnerHTML={{ __html: b.html }} />
+                  ) : b.type === 'image' ? (
+                    <div className="w-full flex items-center justify-center">
+                      <div dangerouslySetInnerHTML={{ __html: b.html }} />
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-400 line-clamp-3" dangerouslySetInnerHTML={{ __html: b.html }} />
+                  ) }
                 </div>
               </div>
             </div>
@@ -1136,34 +1384,126 @@ export default function AdminTrilhaBuilder() {
     const re = new RegExp(`(<!-- block:([a-zA-Z0-9_-]+):${id} -->)([\\s\\S]*?)(<!-- \\/block:\\2:${id} -->)`, 'g');
     const m = re.exec(content);
     if (!m) return;
-    const currentHtml = m[3];
+    const blockType = m[2];
+    const currentHtml = m[3].trim();
+
+    // For title blocks: extract plain text from the tag
+    if (blockType === 'title') {
+      // extract inner HTML of the heading so we preserve formatting inside
+      const innerMatch = currentHtml.match(/^<([a-z0-9]+)[^>]*>([\s\S]*?)<\/\1>$/i);
+      const innerHtml = innerMatch ? innerMatch[2] : currentHtml;
+      setEditingBlockIdState(id);
+      setEditingBlockTypeState(blockType);
+      setEditingBlockHtmlState(innerHtml);
+      initEditorHistory(innerHtml);
+      setUseWysiwygEditor(true);
+      setShowBlockEditor(true);
+      return;
+    }
+
+    // For video/embed blocks: extract iframe src URL
+    if (blockType === 'video' || blockType === 'embed') {
+      const srcMatch = currentHtml.match(/src=["']([^"']+)["']/);
+      const url = srcMatch ? srcMatch[1] : '';
+      setEditingBlockIdState(id);
+      setEditingBlockTypeState(blockType);
+      setEditingBlockHtmlState(url);
+      initEditorHistory(url);
+      setShowBlockEditor(true);
+      return;
+    }
+
+    // Default: raw HTML
     setEditingBlockIdState(id);
+    setEditingBlockTypeState(blockType);
     setEditingBlockHtmlState(currentHtml);
+    initEditorHistory(currentHtml);
     setShowBlockEditor(true);
   };
 
   const saveEditedBlock = () => {
     if (!activeLesson || !editingBlockIdState) return;
+    flushEditorHistory();
+    // Sync latest HTML from WYSIWYG editor ref before saving
+    if (useWysiwygEditor && wysiwygRef.current) {
+      setEditingBlockHtmlState(wysiwygRef.current.innerHTML);
+    }
+    const currentHtmlToSave = (useWysiwygEditor && wysiwygRef.current) ? wysiwygRef.current.innerHTML : editingBlockHtmlState;
     const id = editingBlockIdState;
-    const newHtml = editingBlockHtmlState;
+    const blockType = editingBlockTypeState;
     const content = activeLesson.content || '';
     const re = new RegExp(`(<!-- block:([a-zA-Z0-9_-]+):${id} -->)([\\s\\S]*?)(<!-- \\/block:\\2:${id} -->)`, 'g');
     const m = re.exec(content);
     if (!m) return;
-    const safeHtml = DOMPurify.sanitize(newHtml, { WHOLE_DOCUMENT: false });
-    const replaced = content.replace(re, `${m[1]}\n${safeHtml}\n${m[4]}`);
+
+    let newHtml: string;
+    if (blockType === 'title') {
+      // wrap plain text back in heading tag, detect original tag
+      const origTagMatch = m[3].trim().match(/^<([a-z0-9]+)/);
+      const tag = origTagMatch ? origTagMatch[1] : 'h2';
+      newHtml = `<${tag}>${editingBlockHtmlState}</${tag}>`;
+    } else if (blockType === 'video' || blockType === 'embed') {
+      // rebuild iframe with new URL
+      const embedUrl = getEmbedUrl(editingBlockHtmlState) || editingBlockHtmlState;
+      newHtml = `<div class="embed"><iframe src="${embedUrl}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
+    } else {
+      // If the user entered plain text (no HTML tags), convert paragraphs/newlines
+      // into proper <p> and <br/> so spacing and paragraphs are preserved when
+      // rendering via dangerouslySetInnerHTML. If input already contains HTML
+      // tags, preserve them and sanitize.
+      const looksLikeHtml = /<[^>]+>/.test(currentHtmlToSave);
+      if (!looksLikeHtml) {
+        // escape basic HTML entities then convert double newlines -> paragraphs
+        const escapeHtml = (str: string) =>
+          str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        const paragraphs = currentHtmlToSave
+          .split(/\n\s*\n/) // double newline separates paragraphs
+          .map(p => p.split(/\n/).map(line => escapeHtml(line)).join('<br/>'))
+          .map(p => `<p>${p}</p>`)
+          .join('\n');
+        const sanitizeOpts: Parameters<typeof DOMPurify.sanitize>[1] = { WHOLE_DOCUMENT: false };
+        newHtml = DOMPurify.sanitize(paragraphs, sanitizeOpts);
+      } else {
+        const sanitizeOpts: Parameters<typeof DOMPurify.sanitize>[1] =
+          (blockType === 'video' || blockType === 'embed')
+            ? { WHOLE_DOCUMENT: false, ADD_TAGS: ['iframe'], ADD_ATTR: ['src', 'width', 'height', 'frameborder', 'allowfullscreen', 'allow', 'title'] }
+            : { WHOLE_DOCUMENT: false };
+        newHtml = DOMPurify.sanitize(currentHtmlToSave, sanitizeOpts);
+      }
+    }
+
+    const replaced = content.replace(re, `${m[1]}\n${newHtml}\n${m[4]}`);
     updateLesson({ content: replaced });
     setShowBlockEditor(false);
     setEditingBlockIdState(null);
     setEditingBlockHtmlState('');
+    setEditingBlockTypeState('');
+    wysiwygLoadedBlockRef.current = null;
     showToast('Bloco atualizado');
   };
 
   const cancelEditBlock = () => {
+    if (editorHistoryTimerRef.current) {
+      window.clearTimeout(editorHistoryTimerRef.current);
+      editorHistoryTimerRef.current = null;
+    }
     setShowBlockEditor(false);
     setEditingBlockIdState(null);
     setEditingBlockHtmlState('');
+    setEditingBlockTypeState('');
+    wysiwygLoadedBlockRef.current = null;
   };
+  const activeLesson = getActiveLesson();
+
+  useEffect(() => {
+    // Adjust title textarea height when active lesson or its title changes
+    const el = titleInputRef.current;
+    if (!el) return;
+    // allow browser to compute proper scrollHeight
+    el.style.height = 'auto';
+    // set to scrollHeight (plus small padding) to ensure no clipping
+    el.style.height = `${Math.max(32, el.scrollHeight)}px`;
+  }, [activeLesson?.title, activeLesson?.id]);
 
   if (loading) {
     return (
@@ -1172,8 +1512,6 @@ export default function AdminTrilhaBuilder() {
       </div>
     );
   }
-
-  const activeLesson = getActiveLesson();
 
   return (
     <div className="fixed inset-0 bg-[#f4f7f9] flex flex-col overflow-hidden z-10" style={{ top: '3.5rem', left: 'var(--sidebar-width)', right: 0, bottom: 0 }}>
@@ -1370,7 +1708,7 @@ export default function AdminTrilhaBuilder() {
                       <div 
                         className={cn(
                           "flex items-center justify-between p-2 rounded-md cursor-pointer text-[11px] transition-all",
-                          activeLessonId === lesson.id ? "bg-blue-50 text-faktory-blue font-bold" : "text-slate-500 hover:bg-slate-50"
+                          (activeLessonId === lesson.id && !activeSublessonId) ? "bg-blue-50 text-faktory-blue font-bold" : "text-slate-500 hover:bg-slate-50"
                         )}
                         onClick={() => {
                           setActiveModuleId(module.id);
@@ -1476,13 +1814,13 @@ export default function AdminTrilhaBuilder() {
                 onDrop={(e) => {
                   e.preventDefault();
                   const file = e.dataTransfer?.files?.[0];
-                  if (dragImageRef.current) {
+                      if (dragImageRef.current) {
                     if (!activeLesson) {
                       showToast('Selecione uma aula para mover a imagem');
                     } else {
                       const imgSrc = dragImageRef.current;
-                      const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
-                      updateLesson({ content: block + '\n' + (activeLesson.content || ''), imageUrl: '' });
+                          const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
+                          updateLesson({ content: (activeLesson.content || '') + '\n' + block, imageUrl: '' });
                       showToast('Imagem movida para o conteúdo');
                     }
                     dragImageRef.current = null;
@@ -1498,7 +1836,7 @@ export default function AdminTrilhaBuilder() {
                       showToast('Selecione uma aula para mover o título da página');
                     } else {
                       const block = genBlock(`<h2>${trailData.title}</h2>`, 'title');
-                      updateLesson({ content: block + '\n' + (activeLesson.content || '') });
+                      updateLesson({ content: (activeLesson.content || '') + '\n' + block });
                       setTrailData(prev => ({ ...prev, title: '' }));
                       showToast('Título da página movido para o conteúdo');
                     }
@@ -1506,7 +1844,20 @@ export default function AdminTrilhaBuilder() {
                     setDragPreview({ type: 'none' });
                     return;
                   }
-                  if (dragVideoRef.current) { setVideoPosition('title-top'); dragVideoRef.current = false; showToast('Vídeo movido acima do título'); }
+                  if (dragVideoRef.current) {
+                    // move current lesson video into content as a block (append)
+                    if (activeLesson && activeLesson.videoUrl) {
+                      const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
+                      const videoHtml = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
+                      const block = genBlock(videoHtml, 'video');
+                      updateLesson({ content: (activeLesson.content || '') + '\n' + block, videoUrl: '' });
+                      showToast('Vídeo movido para o conteúdo');
+                    } else {
+                      setVideoPosition('title-top');
+                      showToast('Vídeo movido acima do título');
+                    }
+                    dragVideoRef.current = false;
+                  }
                   if (dragBlockIdRef.current) { const dragId = dragBlockIdRef.current; const blocks = parseBlocks(activeLesson?.content || ''); if (blocks.length) reorderBlock(dragId, blocks[0].id); dragBlockIdRef.current = null; }
                   setDragPreview({ type: 'none' });
                 }}
@@ -1625,17 +1976,59 @@ export default function AdminTrilhaBuilder() {
               )}
 
               {activeLesson ? (
-                <div
-                  draggable
-                  onDragStart={(e) => { dragTitleRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
-                  onDragEnd={() => { dragTitleRef.current = false; }}
-                >
-                  <input 
-                    className="text-3xl font-bold text-slate-700 text-center w-full outline-none focus:border-b-2 border-faktory-blue pb-2"
-                    value={activeLesson.title}
-                    onChange={(e) => updateLesson({ title: e.target.value })}
-                    placeholder="Título da Aula"
-                  />
+                  <div className="flex items-center gap-2 w-full justify-center min-w-0" onMouseEnter={() => setTitleHovered(true)} onMouseLeave={() => setTitleHovered(false)}>
+                  <div
+                    draggable
+                    onDragStart={(e) => { dragTitleRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
+                    onDragEnd={() => { dragTitleRef.current = false; }}
+                    className="cursor-grab text-slate-300 hover:text-slate-400 shrink-0"
+                    title="Arrastar título para o conteúdo"
+                  >
+                    <GripVertical size={18} />
+                  </div>
+
+                    <div className={`flex flex-col flex-1 min-w-0 relative ${titleHovered || (showBlockEditor && editingBlockTypeState === 'title') ? 'bg-white rounded border border-faktory-blue/30 shadow-sm p-3 ring-1 ring-faktory-blue/10' : ''}`}>
+                    {(titleHovered || (showBlockEditor && editingBlockTypeState === 'title')) && (
+                      <div className="absolute -top-3 left-3">
+                        <div className="inline-flex items-center gap-2 bg-faktory-blue text-white text-[11px] font-bold px-2 py-1 rounded">Título</div>
+                      </div>
+                    )}
+                    {(titleHovered || (showBlockEditor && editingBlockTypeState === 'title')) && (
+                      <div className="flex items-center gap-2 justify-center mb-2">
+                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('bold'); }} title="Negrito">B</button>
+                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('italic'); }} title="Itálico">I</button>
+                      <select className="px-2 py-1 rounded border" onChange={(e)=>{ e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount===0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="font-family:${val}">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} defaultValue="">Fonte</select>
+                      <select className="px-2 py-1 rounded border" onChange={(e)=>{ e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount===0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="font-size:${val}px">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} defaultValue="">Tamanho</select>
+                      <input type="color" className="w-8 h-8 p-0 border rounded" onChange={(e)=>{ e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount===0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="color:${val}">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} title="Cor da fonte" />
+                      <div className="ml-2" />
+                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('justifyLeft'); }} title="Alinhar esquerda">L</button>
+                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('justifyCenter'); }} title="Centralizar">C</button>
+                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('justifyRight'); }} title="Alinhar direita">R</button>
+                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('justifyFull'); }} title="Justificar">J</button>
+                      </div>
+                    )}
+
+                    <div
+                      ref={titleInputRef as any}
+                      contentEditable
+                      suppressContentEditableWarning
+                      className="text-3xl font-bold text-slate-700 text-center flex-1 min-w-0 w-full outline-none focus:border-b-2 border-faktory-blue pb-2 resize-none bg-transparent"
+                      onInput={() => {
+                        const el = titleInputRef.current as HTMLDivElement | null;
+                        if (!el) return;
+                        // auto-resize handled by flow; ensure no excessive height
+                      }}
+                      onBlur={() => {
+                        const el = titleInputRef.current as HTMLDivElement | null;
+                        if (!el) return;
+                        const html = el.innerHTML;
+                        const text = el.textContent || '';
+                        updateLesson({ title: text, titleHtml: html } as any);
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      dangerouslySetInnerHTML={{ __html: getActiveLessonTitleHtml() }}
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="text-slate-300 italic">Selecione ou crie uma aula para começar</div>
@@ -1658,7 +2051,7 @@ export default function AdminTrilhaBuilder() {
                     } else {
                       const imgSrc = dragImageRef.current;
                       const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
-                      updateLesson({ content: block + '\n' + (activeLesson.content || ''), imageUrl: '' });
+                      updateLesson({ content: (activeLesson.content || '') + '\n' + block, imageUrl: '' });
                       showToast('Imagem movida para o conteúdo');
                     }
                     dragImageRef.current = null;
@@ -1669,10 +2062,23 @@ export default function AdminTrilhaBuilder() {
                     handleImageFile(file);
                     return;
                   }
-                  if (dragVideoRef.current) { setVideoPosition('top'); dragVideoRef.current = false; showToast('Vídeo movido acima do conteúdo'); }
-                  if (dragTitleRef.current && activeLesson && activeLesson.title) {
-                    const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
-                    updateLesson({ content: block + '\n' + (activeLesson.content || ''), title: '' });
+                  if (dragVideoRef.current) {
+                    if (activeLesson && activeLesson.videoUrl) {
+                      const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
+                      const videoHtml = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
+                      const block = genBlock(videoHtml, 'video');
+                      updateLesson({ content: (activeLesson.content || '') + '\n' + block, videoUrl: '' });
+                      showToast('Vídeo movido para o conteúdo');
+                    } else {
+                      setVideoPosition('top');
+                      showToast('Vídeo movido acima do conteúdo');
+                    }
+                    dragVideoRef.current = false;
+                  }
+                  if (dragTitleRef.current && activeLesson) {
+                    const titleHtml = getActiveLessonTitleHtml();
+                    const block = genBlock(titleHtml, 'title');
+                    updateLesson({ content: (activeLesson.content || '') + '\n' + block, title: '' } as any);
                     dragTitleRef.current = false;
                     showToast('Título movido para o conteúdo');
                   }
@@ -1681,7 +2087,7 @@ export default function AdminTrilhaBuilder() {
                       showToast('Selecione uma aula para mover o título da página');
                     } else {
                       const block = genBlock(`<h2>${trailData.title}</h2>`, 'title');
-                      updateLesson({ content: block + '\n' + (activeLesson.content || '') });
+                      updateLesson({ content: (activeLesson.content || '') + '\n' + block });
                       setTrailData(prev => ({ ...prev, title: '' }));
                       showToast('Título da página movido para o conteúdo');
                     }
@@ -1761,215 +2167,236 @@ export default function AdminTrilhaBuilder() {
                       <div className="mb-4 p-4 border-2 border-dashed border-faktory-blue rounded bg-white/60 text-center">Solte aqui para inserir</div>
                     )}
                     <div ref={blocksAreaRef} />
-                    <div ref={previewAreaRef} className="space-y-4 relative min-h-[120px]">
+                    <div ref={previewAreaRef} className="space-y-1 relative min-h-[120px]">
                         {parseBlocks(activeLesson?.content || '').sort((a,b) => a.index - b.index).map((b: any) => (
-                          <div
-                            key={b.id}
-                            ref={(el) => { blockRefs.current[b.id] = el; }}
-                            className={`relative rounded transition-all ${
-                              dragPreview.type === 'block' && dragPreview.id === b.id
-                                ? 'shadow-lg ring-2 ring-faktory-blue ring-offset-2'
-                                : hoveredBlockId === b.id
-                                  ? 'ring-2 ring-faktory-blue/50 ring-offset-1'
-                                  : ''
-                            } bg-white`}
-                            draggable
-                            onDragStart={(e) => { dragBlockIdRef.current = b.id; e.dataTransfer.effectAllowed = 'move'; }}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              const el = blockRefs.current[b.id];
-                              const container = blocksAreaRef.current;
-                              if (el && container) {
-                                const rect = el.getBoundingClientRect();
-                                const containerRect = container.getBoundingClientRect();
-                                const relTop = rect.top - containerRect.top + container.scrollTop;
-                                const relLeft = rect.left - containerRect.left + container.scrollLeft;
-                                const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
-                                setDragPreview({ type: 'block', id: b.id, rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height }, pos, source: 'preview' });
-                              } else {
-                                setDragPreview({ type: 'block', id: b.id, source: 'preview' });
-                              }
-                            }}
-                            onDragLeave={() => setDragPreview({ type: 'none' })}
-                            onMouseEnter={() => {
-                              if (dragBlockIdRef.current) return;
-                              setHoveredBlockId(b.id);
-                              const el = blockRefs.current[b.id];
-                              const container = blocksAreaRef.current;
-                              if (el && container) {
-                                const rect = el.getBoundingClientRect();
-                                const containerRect = container.getBoundingClientRect();
-                                const relTop = rect.top - containerRect.top + container.scrollTop;
-                                const relLeft = rect.left - containerRect.left + container.scrollLeft;
-                                setDragPreview({ type: 'block', id: b.id, rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height } });
-                              } else {
-                                setDragPreview({ type: 'block', id: b.id });
-                              }
-                            }}
-                            onMouseMove={(e) => {
-                              if (dragBlockIdRef.current) return;
-                              const el = blockRefs.current[b.id];
-                              if (!el) return;
-                              const rect = el.getBoundingClientRect();
-                              const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
-                              setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === b.id ? prev : { type: 'block', id: b.id }), pos }));
-                            }}
-                            onMouseLeave={() => {
-                              if (!dragBlockIdRef.current) setDragPreview({ type: 'none' });
-                              setHoveredBlockId(null);
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              const pos = dragPreview.pos || 'before';
-                              const dragId = dragBlockIdRef.current;
-                              if (dragTitleRef.current && activeLesson && activeLesson.title) {
-                                const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
-                                const content = activeLesson.content || '';
-                                const parsed = parseBlocks(content).sort((a: any, b: any) => a.index - b.index);
-                                const idx = parsed.findIndex((x: any) => x.id === b.id);
-                                const parts: string[] = [];
-                                let last = 0;
-                                for (const bl of parsed) {
-                                  parts.push(content.slice(last, bl.index));
-                                  parts.push(content.slice(bl.index, bl.index + bl.length));
-                                  last = bl.index + bl.length;
-                                }
-                                parts.push(content.slice(last));
-                                const insertAt = pos === 'before' ? (idx * 2) : (idx * 2 + 2);
-                                parts.splice(insertAt, 0, block);
-                                updateLesson({ content: parts.join(''), title: '' });
-                                dragTitleRef.current = false;
-                                setDragPreview({ type: 'none' });
-                                showToast('Título movido para o conteúdo');
-                                return;
-                              }
-                              if (dragId && dragId !== b.id) reorderBlockTo(dragId, b.id, pos);
-                              dragBlockIdRef.current = null;
-                              setDragPreview({ type: 'none' });
-                            }}
-                          >
-                            {/* ── Toolbar overlay — aparece ao passar o mouse ── */}
-                            {hoveredBlockId === b.id && (
-                              <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t">
-                                {/* esquerda: badge de tipo + handle */}
-                                <div
-                                  className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-grab select-none"
-                                  title="Arrastar bloco"
-                                >
-                                  <GripVertical size={11} />
-                                  {b.type === 'custom' ? 'Texto/HTML' :
-                                   b.type === 'title' ? 'Título' :
-                                   b.type === 'image' ? 'Imagem' :
-                                   b.type === 'video' ? 'Vídeo' :
-                                   b.type === 'highlight' ? 'Destaque' :
-                                   b.type === 'group' ? 'Grupo' :
-                                   b.type === 'embed' ? 'Embed' :
-                                   b.type === 'logo' ? 'Logo' :
-                                   b.type}
-                                </div>
-                                {/* direita: botões de ação */}
-                                <div className="flex items-center gap-0.5">
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }}
-                                    className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
-                                    title="Editar"
-                                  ><Pencil size={13} /></button>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }}
-                                    className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
-                                    title="Duplicar"
-                                  ><Copy size={13} /></button>
-                                  <div className="w-px h-4 bg-slate-200 mx-0.5" />
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, -1); }}
-                                    className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
-                                    title="Mover para cima"
-                                  ><ChevronUp size={13} /></button>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, 1); }}
-                                    className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
-                                    title="Mover para baixo"
-                                  ><ChevronDown size={13} /></button>
-                                  <div className="w-px h-4 bg-slate-200 mx-0.5" />
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }}
-                                    className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
-                                    title="Remover"
-                                  ><Trash2 size={13} /></button>
-                                </div>
-                              </div>
+                          <div key={b.id} className="relative">
+                            {/* ── Linha de inserção ANTES ── */}
+                            {dragPreview.type === 'block' && dragPreview.id === b.id && dragPreview.pos === 'before' && dragPreview.source === 'preview' && (
+                              <div className="pointer-events-none absolute -top-1 left-0 right-0 h-1 bg-faktory-blue rounded z-50" />
                             )}
-                            {/* ── Conteúdo do bloco ── */}
-                            <div className={`relative ${hoveredBlockId === b.id ? 'pt-8' : ''}`}>
-                              <div className="absolute inset-0 z-10" />
-                              <div className="p-4" dangerouslySetInnerHTML={{ __html: b.html }} />
+                            <div
+                              ref={(el) => { blockRefs.current[b.id] = el; }}
+                              className={`relative rounded-lg border transition-all bg-white ${
+                                dragPreview.type === 'block' && dragPreview.id === b.id && dragPreview.source === 'preview'
+                                  ? 'border-faktory-blue/40 shadow-md'
+                                  : hoveredBlockId === b.id
+                                    ? 'border-faktory-blue/50 shadow-sm'
+                                    : 'border-transparent'
+                              }`}
+                              draggable
+                              onDragStart={(e) => { dragBlockIdRef.current = b.id; e.dataTransfer.effectAllowed = 'move'; }}
+                              onDragEnd={() => { dragBlockIdRef.current = null; }}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const el = blockRefs.current[b.id];
+                                if (el) {
+                                  const rect = el.getBoundingClientRect();
+                                  const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
+                                  setDragPreview({ type: 'block', id: b.id, pos, source: 'preview' });
+                                }
+                              }}
+                              onDragLeave={(e) => {
+                                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                                  setDragPreview({ type: 'none' });
+                                }
+                              }}
+                              onMouseEnter={() => { if (!dragBlockIdRef.current) setHoveredBlockId(b.id); }}
+                              onMouseLeave={() => { setHoveredBlockId(null); if (!dragBlockIdRef.current) setDragPreview({ type: 'none' }); }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const pos = dragPreview.pos || 'before';
+                                const dragId = dragBlockIdRef.current;
+                                const insertBlock = (newBlock: string) => {
+                                  const content = activeLesson!.content || '';
+                                  const parsed = parseBlocks(content).sort((a: any, bx: any) => a.index - bx.index);
+                                  const idx = parsed.findIndex((x: any) => x.id === b.id);
+                                  const parts: string[] = [];
+                                  let last = 0;
+                                  for (const bl of parsed) {
+                                    parts.push(content.slice(last, bl.index));
+                                    parts.push(content.slice(bl.index, bl.index + bl.length));
+                                    last = bl.index + bl.length;
+                                  }
+                                  parts.push(content.slice(last));
+                                  parts.splice(pos === 'before' ? (idx * 2) : (idx * 2 + 2), 0, newBlock);
+                                  return parts.join('');
+                                };
+                                if (dragTitleRef.current && activeLesson) {
+                                  const titleHtml = getActiveLessonTitleHtml();
+                                  const block = genBlock(titleHtml, 'title');
+                                  updateLesson({ content: insertBlock(block), title: '' } as any);
+                                  dragTitleRef.current = false;
+                                  setDragPreview({ type: 'none' });
+                                  showToast('Título movido para o conteúdo');
+                                  return;
+                                }
+                                if (dragVideoRef.current && activeLesson?.videoUrl) {
+                                  const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
+                                  const videoHtml = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
+                                  const videoBlock = genBlock(videoHtml, 'video');
+                                  updateLesson({ content: insertBlock(videoBlock), videoUrl: '' });
+                                  dragVideoRef.current = false;
+                                  setDragPreview({ type: 'none' });
+                                  showToast('Vídeo inserido como bloco');
+                                  return;
+                                }
+                                if (dragId && dragId !== b.id) reorderBlockTo(dragId, b.id, pos);
+                                dragBlockIdRef.current = null;
+                                setDragPreview({ type: 'none' });
+                              }}
+                            >
+                              {/* ── Toolbar overlay — aparece ao passar o mouse ── */}
+                              {hoveredBlockId === b.id && (
+                                <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
+                                  <div
+                                    className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-grab select-none"
+                                    title="Arrastar bloco"
+                                  >
+                                    <GripVertical size={11} />
+                                    {b.type === 'custom' ? 'Texto/HTML' :
+                                     b.type === 'title' ? 'Título' :
+                                     b.type === 'image' ? 'Imagem' :
+                                     b.type === 'video' ? 'Vídeo' :
+                                     b.type === 'highlight' ? 'Destaque' :
+                                     b.type === 'group' ? 'Grupo' :
+                                     b.type === 'embed' ? 'Embed' :
+                                     b.type === 'logo' ? 'Logo' :
+                                     b.type}
+                                  </div>
+                                  <div className="flex items-center gap-0.5">
+                                    <button onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors" title="Editar"><Pencil size={13} /></button>
+                                    <button onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors" title="Duplicar"><Copy size={13} /></button>
+                                    <div className="w-px h-4 bg-slate-200 mx-0.5" />
+                                    <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, -1); }} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors" title="Mover para cima"><ChevronUp size={13} /></button>
+                                    <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, 1); }} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors" title="Mover para baixo"><ChevronDown size={13} /></button>
+                                    <div className="w-px h-4 bg-slate-200 mx-0.5" />
+                                    <button onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }} className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors" title="Remover"><Trash2 size={13} /></button>
+                                  </div>
+                                </div>
+                              )}
+                              {/* ── Conteúdo do bloco ── */}
+                              <div
+                                className={`relative ${hoveredBlockId === b.id ? 'pt-8' : ''} cursor-pointer`}
+                                onDoubleClick={(e) => { e.stopPropagation(); editBlockById(b.id); }}
+                                title="Duplo clique para editar"
+                              >
+                                <div className="p-4 pointer-events-none rich-text-content" dangerouslySetInnerHTML={{ __html: b.html }} />
+                              </div>
                             </div>
+                            {/* ── Linha de inserção DEPOIS ── */}
+                            {dragPreview.type === 'block' && dragPreview.id === b.id && dragPreview.pos === 'after' && dragPreview.source === 'preview' && (
+                              <div className="pointer-events-none absolute -bottom-1 left-0 right-0 h-1 bg-faktory-blue rounded z-50" />
+                            )}
                           </div>
                         ))}
-
-                        {dragPreview.type === 'block' && dragPreview.rect && dragPreview.source === 'preview' && (
-                          <>
-                            <div
-                              className="pointer-events-none absolute rounded border-2 border-dashed border-faktory-blue bg-faktory-blue/8"
-                              style={{ top: dragPreview.rect.top, left: dragPreview.rect.left, width: dragPreview.rect.width, height: dragPreview.rect.height }}
-                            />
-                            <div
-                              className="pointer-events-none absolute bg-faktory-blue"
-                              style={{
-                                top: (dragPreview.pos === 'after' ? (dragPreview.rect.top + dragPreview.rect.height - 2) : (dragPreview.rect.top - 2)),
-                                left: dragPreview.rect.left,
-                                width: dragPreview.rect.width,
-                                height: 4,
-                                borderRadius: 2,
-                                opacity: 0.95
-                              }}
-                            />
-                          </>
-                        )}
                       </div>
                   </div>
 
-                  {/* Quiz Section — só exibe quando a aula já tem quiz definido */}
+                  {/* Quiz Section */}
                   {activeLesson.quiz ? (
                   <div className="mt-10 pt-10 border-t border-slate-100">
-                    <h3 className="text-lg font-bold text-slate-700 mb-6 flex items-center gap-2">
-                      <HelpCircle className="text-faktory-blue" size={20} />
-                      Questionário de Fixação
-                    </h3>
-                    <div className="space-y-4">
-                      <input 
-                        className="w-full p-3 bg-white border border-slate-200 rounded-md font-bold text-slate-600 outline-none focus:border-faktory-blue"
-                        placeholder="Pergunta do quiz..."
-                        value={activeLesson.quiz?.question}
-                        onChange={(e) => updateLesson({ quiz: { ...activeLesson.quiz!, question: e.target.value } })}
-                      />
-                      <div className="grid grid-cols-2 gap-4">
-                        {activeLesson.quiz?.options.map((option, idx) => (
-                          <div key={idx} className="flex items-center gap-2 bg-slate-50 p-3 rounded-md border border-slate-100">
-                            <input 
-                              type="radio" 
-                              checked={activeLesson.quiz?.correctIndex === idx}
-                              onChange={() => updateLesson({ quiz: { ...activeLesson.quiz!, correctIndex: idx } })}
-                            />
-                            <input 
-                              className="bg-transparent text-xs w-full outline-none"
-                              value={option}
-                              onChange={(e) => {
-                                const newOptions = [...activeLesson.quiz!.options];
-                                newOptions[idx] = e.target.value;
-                                updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions } });
-                              }}
-                              placeholder={`Opção ${idx + 1}`}
-                            />
+                    {/* === Bloco CTA — "Fazer questionário" === */}
+                    <div
+                      className={`group relative rounded-lg border transition-all bg-white mb-6 ${hoveredBlockId === '__quiz_cta__' ? 'border-faktory-blue/50 shadow-sm' : 'border-slate-200'}`}
+                      onMouseEnter={() => setHoveredBlockId('__quiz_cta__')}
+                      onMouseLeave={() => setHoveredBlockId(null)}
+                    >
+                      {hoveredBlockId === '__quiz_cta__' && (
+                        <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
+                          <div className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded select-none">
+                            <HelpCircle size={11} />
+                            Botão — Fazer Questionário
                           </div>
-                        ))}
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              onClick={() => updateLesson({ quiz: undefined })}
+                              className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
+                              title="Remover questionário"
+                            ><Trash2 size={13} /></button>
+                          </div>
+                        </div>
+                      )}
+                      <div className={`p-6 flex flex-col items-center gap-3 ${hoveredBlockId === '__quiz_cta__' ? 'pt-10' : ''}`}>
+                        <p className="text-sm text-slate-500 text-center">O questionário de fixação será exibido ao aluno após clicar no botão abaixo:</p>
+                        <button className="px-6 py-2.5 bg-faktory-blue text-white rounded-lg font-bold text-sm pointer-events-none select-none shadow">
+                          Fazer questionário
+                        </button>
                       </div>
-                      <button
-                        onClick={() => updateLesson({ quiz: undefined })}
-                        className="text-xs text-red-500 hover:underline"
-                      >
-                        Remover questionário
-                      </button>
+                    </div>
+
+                    {/* === Bloco de edição do quiz === */}
+                    <div
+                      className={`group relative rounded-lg border transition-all bg-white ${hoveredBlockId === '__quiz__' ? 'border-faktory-blue/50 shadow-sm' : 'border-slate-200'}`}
+                      onMouseEnter={() => setHoveredBlockId('__quiz__')}
+                      onMouseLeave={() => setHoveredBlockId(null)}
+                    >
+                      {hoveredBlockId === '__quiz__' && (
+                        <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
+                          <div className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded select-none">
+                            <HelpCircle size={11} />
+                            Questionário de Fixação
+                          </div>
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              onClick={() => {
+                                const opts = [...(activeLesson.quiz?.options || []), ''];
+                                updateLesson({ quiz: { ...activeLesson.quiz!, options: opts } });
+                              }}
+                              className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
+                              title="Adicionar opção"
+                            ><Plus size={13} /></button>
+                            <button
+                              onClick={() => updateLesson({ quiz: undefined })}
+                              className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
+                              title="Remover questionário"
+                            ><Trash2 size={13} /></button>
+                          </div>
+                        </div>
+                      )}
+                      <div className={`p-6 space-y-4 ${hoveredBlockId === '__quiz__' ? 'pt-10' : ''}`}>
+                        <input
+                          className="w-full p-3 bg-white border border-slate-200 rounded-md font-bold text-slate-600 outline-none focus:border-faktory-blue"
+                          placeholder="Digite a pergunta do questionário..."
+                          value={activeLesson.quiz?.question}
+                          onChange={(e) => updateLesson({ quiz: { ...activeLesson.quiz!, question: e.target.value } })}
+                        />
+                        <div className="space-y-2">
+                          {activeLesson.quiz?.options.map((option, idx) => (
+                            <div key={idx} className="flex items-center gap-2 bg-slate-50 p-3 rounded-md border border-slate-100 group/opt">
+                              <input
+                                type="radio"
+                                checked={activeLesson.quiz?.correctIndex === idx}
+                                onChange={() => updateLesson({ quiz: { ...activeLesson.quiz!, correctIndex: idx } })}
+                                title="Marcar como resposta correta"
+                              />
+                              <input
+                                className="bg-transparent text-sm w-full outline-none"
+                                value={option}
+                                onChange={(e) => {
+                                  const newOptions = [...activeLesson.quiz!.options];
+                                  newOptions[idx] = e.target.value;
+                                  updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions } });
+                                }}
+                                placeholder={`Opção ${idx + 1}`}
+                              />
+                              {(activeLesson.quiz?.options.length ?? 0) > 2 && (
+                                <button
+                                  onClick={() => {
+                                    const newOptions = activeLesson.quiz!.options.filter((_, i) => i !== idx);
+                                    const correctIndex = activeLesson.quiz!.correctIndex >= newOptions.length ? 0 : activeLesson.quiz!.correctIndex;
+                                    updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions, correctIndex } });
+                                  }}
+                                  className="opacity-0 group-hover/opt:opacity-100 p-1 text-slate-300 hover:text-red-500 transition-all"
+                                  title="Remover opção"
+                                ><Trash2 size={12} /></button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-slate-400">Selecione o rádio ao lado da opção correta. Passe o mouse sobre uma opção para removê-la.</p>
+                      </div>
                     </div>
                   </div>
                   ) : (
@@ -2034,8 +2461,9 @@ export default function AdminTrilhaBuilder() {
                   }
 
                   if (label.includes('Título')) {
-                    const block = genBlock(`<h2>${activeLesson.title}</h2>`, 'title');
-                    updateLesson({ content: block + '\n' + activeLesson.content });
+                    const titleHtml = getActiveLessonTitleHtml() || '<h2>Título de seção</h2>';
+                    const block = genBlock(titleHtml, 'title');
+                    updateLesson({ content: (activeLesson.content || '') + '\n' + block } as any);
                     showToast('Título inserido');
                     return;
                   }
@@ -2224,36 +2652,37 @@ export default function AdminTrilhaBuilder() {
                 </div>
               </div>
 
-                <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-between">
-                <button 
-                  type="button"
-                  onClick={() => { updateLesson({ videoUrl: '' }); setShowVideoModal(false); }}
-                  className="px-4 py-2 bg-red-600 text-white rounded font-bold text-sm hover:bg-red-700 transition-all"
-                >
-                  Remover Vídeo
-                </button>
-                <button
-                  type="button"
-                  onClick={() => insertVideoAsBlock()}
-                  className="ml-3 px-4 py-2 bg-white border rounded font-medium text-sm hover:bg-slate-50 transition-all"
-                >
-                  Inserir vídeo como bloco
-                </button>
-                <div>
+                <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-3">
                   <button 
-                    onClick={() => setShowVideoModal(false)}
-                    className="mr-3 px-4 py-2 bg-white border border-slate-200 rounded font-medium text-sm hover:bg-slate-50 transition-all"
+                    type="button"
+                    onClick={() => { updateLesson({ videoUrl: '' }); setShowVideoModal(false); }}
+                    className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg font-bold text-sm hover:bg-red-700 transition-all"
                   >
-                    Cancelar
+                    <Trash2 size={14} />
+                    Remover Vídeo
                   </button>
-                  <button 
-                    onClick={() => setShowVideoModal(false)}
-                    className="px-8 py-2.5 bg-faktory-blue text-white rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-all shadow-lg shadow-blue-100"
-                  >
-                    Confirmar Alterações
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => insertVideoAsBlock()}
+                      className="px-4 py-2 bg-white border border-slate-200 rounded-lg font-medium text-sm hover:bg-slate-50 transition-all"
+                    >
+                      Inserir como bloco
+                    </button>
+                    <button 
+                      onClick={() => setShowVideoModal(false)}
+                      className="px-4 py-2 bg-white border border-slate-200 rounded-lg font-medium text-sm hover:bg-slate-50 transition-all"
+                    >
+                      Cancelar
+                    </button>
+                    <button 
+                      onClick={() => setShowVideoModal(false)}
+                      className="px-6 py-2 bg-faktory-blue text-white rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-all"
+                    >
+                      Confirmar
+                    </button>
+                  </div>
                 </div>
-              </div>
             </motion.div>
           </div>
         )}
@@ -2312,25 +2741,288 @@ export default function AdminTrilhaBuilder() {
               initial={{ opacity: 0, scale: 0.98, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.98, y: 10 }}
-              className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden"
+              className="bg-white rounded-xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden"
+              style={{ height: '88vh' }}
             >
-              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                <h3 className="text-lg font-bold text-slate-800">Editar Bloco</h3>
-                <button onClick={cancelEditBlock} className="p-2 text-slate-400 hover:text-slate-600"><Minus size={18} /></button>
+              {/* Header */}
+              <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between shrink-0">
+                <h3 className="text-base font-bold text-slate-800">Editar Bloco</h3>
+                <button onClick={cancelEditBlock} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100"><Minus size={18} /></button>
               </div>
-              <div className="p-6">
-                <div className="mb-3 text-xs text-slate-500">Edição HTML (WYSIWYG simples)</div>
-                <div
-                  contentEditable
-                  suppressContentEditableWarning
-                  onInput={(e: any) => setEditingBlockHtmlState(e.currentTarget.innerHTML)}
-                  className="min-h-[200px] p-4 border border-slate-100 rounded prose max-w-none"
-                  dangerouslySetInnerHTML={{ __html: editingBlockHtmlState }}
-                />
+
+              {/* Body */}
+              <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
+
+                {/* ── Título ── */}
+                {editingBlockTypeState === 'title' && (
+                  <>
+                    <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Texto do título</div>
+                    <div className="border border-slate-200 rounded-lg overflow-hidden">
+                      <div className="flex items-center gap-1 px-2 py-1.5 bg-slate-50 border-b border-slate-200" onMouseDown={(e) => { e.preventDefault(); }}>
+                        <button type="button" title="Negrito" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('bold')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">B</button>
+                        <button type="button" title="Itálico" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('italic')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white italic">I</button>
+                        <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="inherit" onChange={(e) => execCommand('fontName', e.target.value)}>
+                          <option value="inherit">Fonte</option>
+                          <option value="Arial">Arial</option>
+                          <option value="Georgia">Georgia</option>
+                          <option value="Times New Roman">Times New Roman</option>
+                        </select>
+                        <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="3" onChange={(e) => execCommand('fontSize', e.target.value)}>
+                          <option value="3">12px</option>
+                          <option value="4">14px</option>
+                          <option value="5">18px</option>
+                          <option value="6">24px</option>
+                        </select>
+                        <input type="color" className="w-8 h-8 p-0 border rounded" onChange={(e) => execCommand('foreColor', e.target.value)} title="Cor da fonte" />
+                        <div className="w-px h-5 bg-slate-200 mx-1" />
+                        <button type="button" title="Alinhar esquerda" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyLeft')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">L</button>
+                        <button type="button" title="Centralizar" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyCenter')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">C</button>
+                        <button type="button" title="Alinhar direita" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyRight')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">R</button>
+                        <div className="ml-auto" />
+                      </div>
+                      <div
+                        ref={wysiwygRef}
+                        contentEditable
+                        suppressContentEditableWarning
+                        onMouseUp={() => saveEditorSelection()}
+                        onKeyUp={() => saveEditorSelection()}
+                        onInput={(e) => { handleWysiwygInput((e.currentTarget as HTMLDivElement).innerHTML); saveEditorSelection(); }}
+                        className="w-full p-4 text-2xl font-bold text-slate-700 outline-none bg-white"
+                        style={{ minHeight: 120 }}
+                        dir="ltr"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* ── Vídeo / Embed ── */}
+                {(editingBlockTypeState === 'video' || editingBlockTypeState === 'embed') && (
+                  <>
+                    <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">URL do vídeo</div>
+                    <input
+                      autoFocus
+                      value={editingBlockHtmlState}
+                      onChange={(e) => handleEditorValueChange(e.target.value)}
+                      className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
+                      placeholder="https://www.youtube.com/watch?v=..."
+                      dir="ltr"
+                    />
+                    <p className="text-[10px] text-slate-400 italic">Cole o link do YouTube, Vimeo ou URL de embed direta.</p>
+                    {editingBlockHtmlState && (
+                      <div className="rounded-lg overflow-hidden border border-slate-100 flex-1">
+                        <iframe
+                          src={getEmbedUrl(editingBlockHtmlState) || editingBlockHtmlState}
+                          width="100%"
+                          height="100%"
+                          style={{ minHeight: 360 }}
+                          frameBorder="0"
+                          allowFullScreen
+                          title="Preview do vídeo"
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ── WYSIWYG / Custom ── */}
+                {editingBlockTypeState !== 'title' && editingBlockTypeState !== 'video' && editingBlockTypeState !== 'embed' && (
+                  <>
+                    {/* Toolbar */}
+                    <div className="border border-slate-200 rounded-lg overflow-hidden shrink-0">
+                      {/* Linha 1: fonte, tamanho, cor, formatação básica */}
+                      <div className="flex flex-wrap items-center gap-1 px-2 py-1.5 bg-slate-50 border-b border-slate-200" onMouseDown={(e) => { if ((e.target as HTMLElement).tagName !== 'SELECT' && (e.target as HTMLElement).tagName !== 'INPUT') e.preventDefault(); }}>
+                        {/* Tipo de fonte */}
+                        <select
+                          className="h-7 text-xs border border-slate-200 rounded px-1 bg-white"
+                          defaultValue="inherit"
+                          onChange={(e) => { execCommand('fontName', e.target.value); }}
+                        >
+                          <option value="inherit">Fonte padrão</option>
+                          <option value="Arial">Arial</option>
+                          <option value="Georgia">Georgia</option>
+                          <option value="Times New Roman">Times New Roman</option>
+                          <option value="Courier New">Courier New</option>
+                          <option value="Verdana">Verdana</option>
+                          <option value="Trebuchet MS">Trebuchet MS</option>
+                        </select>
+
+                        {/* Tamanho */}
+                        <select
+                          className="h-7 text-xs border border-slate-200 rounded px-1 bg-white"
+                          defaultValue="3"
+                          onChange={(e) => { execCommand('fontSize', e.target.value); }}
+                        >
+                          <option value="1">8px</option>
+                          <option value="2">10px</option>
+                          <option value="3">12px</option>
+                          <option value="4">14px</option>
+                          <option value="5">18px</option>
+                          <option value="6">24px</option>
+                          <option value="7">36px</option>
+                        </select>
+
+                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
+
+                        {/* Cor da fonte */}
+                        <label className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer h-7 px-1.5 border border-slate-200 rounded bg-white hover:bg-slate-50">
+                          <span className="font-bold text-sm" style={{ textShadow: '0 1px 0 rgba(0,0,0,.1)' }}>A</span>
+                          <span className="text-[10px]">Cor</span>
+                          <input
+                            type="color"
+                            className="w-0 h-0 opacity-0 absolute"
+                            onChange={(e) => { execCommand('foreColor', e.target.value); }}
+                          />
+                        </label>
+
+                        {/* Cor de fundo */}
+                        <label className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer h-7 px-1.5 border border-slate-200 rounded bg-white hover:bg-slate-50">
+                          <span className="text-sm">🖊</span>
+                          <span className="text-[10px]">Destaque</span>
+                          <input
+                            type="color"
+                            className="w-0 h-0 opacity-0 absolute"
+                            onChange={(e) => { execCommand('hiliteColor', e.target.value); }}
+                          />
+                        </label>
+
+                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
+
+                        {/* Negrito */}
+                        <button type="button" title="Negrito (Ctrl+B)" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('bold'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 font-bold text-sm">B</button>
+                        {/* Itálico */}
+                        <button type="button" title="Itálico (Ctrl+I)" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('italic'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 italic text-sm">I</button>
+                        {/* Sublinhado */}
+                        <button type="button" title="Sublinhado (Ctrl+U)" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('underline'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 underline text-sm">U</button>
+                        {/* Tachado */}
+                        <button type="button" title="Tachado" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('strikethrough'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 line-through text-sm">S</button>
+
+                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
+
+                        {/* Alinhamentos */}
+                        <button type="button" title="Alinhar à esquerda" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('justifyLeft'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">⬱</button>
+                        <button type="button" title="Centralizar" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('justifyCenter'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">≡</button>
+                        <button type="button" title="Alinhar à direita" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('justifyRight'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">⬰</button>
+                        <button type="button" title="Justificado" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('justifyFull'); }}
+                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-[10px]">Justif.</button>
+
+                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
+
+                        {/* Listas */}
+                        <button
+                          type="button"
+                          title="Lista com marcadores"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            execCommand('insertUnorderedList');
+                          }}
+                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-xs gap-1">• Lista</button>
+                        <button
+                          type="button"
+                          title="Lista numerada"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            execCommand('insertOrderedList');
+                          }}
+                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-xs gap-1">1. Lista</button>
+
+                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
+
+                        {/* Recuo */}
+                        <button type="button" title="Aumentar recuo" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('indent'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">→</button>
+                        <button type="button" title="Diminuir recuo" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('outdent'); }}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">←</button>
+
+                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
+
+                        {/* Link */}
+                        <button type="button" title="Inserir link" onMouseDown={(e) => e.preventDefault()} onClick={() => { const url = window.prompt('URL do link:'); if (url) { execCommand('createLink', url); } }}
+                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-xs">🔗 Link</button>
+                        <button type="button" title="Remover link" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('unlink'); }}
+                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-xs">✂ Link</button>
+
+                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
+
+                        {/* Desfazer / Refazer */}
+                        <button
+                          type="button"
+                          title="Desfazer (Ctrl+Z)"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={handleUndoEditor}
+                          disabled={!canUndoEditor()}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Undo2 size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Refazer (Ctrl+Y / Ctrl+Shift+Z)"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={handleRedoEditor}
+                          disabled={!canRedoEditor()}
+                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Redo2 size={14} />
+                        </button>
+
+                        {/* Limpar formatação */}
+                        <button type="button" title="Limpar formatação" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('removeFormat'); }}
+                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-red-50 text-red-400 text-xs ml-1">✕ Form.</button>
+
+                        {/* Toggle fonte */}
+                        <button type="button" onClick={() => {
+                          // Sync WYSIWYG content to state before switching to source view
+                          if (useWysiwygEditor && wysiwygRef.current) {
+                            setEditingBlockHtmlState(wysiwygRef.current.innerHTML);
+                          }
+                          setUseWysiwygEditor(prev => !prev);
+                        }}
+                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-slate-100 text-xs text-slate-500 ml-auto">
+                          {useWysiwygEditor ? '</> Fonte' : '📝 Visual'}
+                        </button>
+                      </div>
+
+                      {/* Área editável */}
+                      {useWysiwygEditor ? (
+                        <div
+                          ref={wysiwygRef}
+                          contentEditable
+                          suppressContentEditableWarning
+                          onMouseUp={() => saveEditorSelection()}
+                          onKeyUp={() => saveEditorSelection()}
+                          onInput={(e) => {
+                            handleWysiwygInput((e.currentTarget as HTMLDivElement).innerHTML);
+                            saveEditorSelection();
+                          }}
+                          className="w-full p-5 text-sm outline-none bg-white rich-text-editor"
+                          style={{ minHeight: 380, lineHeight: 1.7 }}
+                          dir="ltr"
+                        />
+                      ) : (
+                        <textarea
+                          value={editingBlockHtmlState}
+                          onChange={(e) => handleEditorValueChange(e.target.value)}
+                          className="w-full p-4 font-mono text-sm outline-none bg-white resize-none"
+                          style={{ minHeight: 380 }}
+                          dir="ltr"
+                          spellCheck={false}
+                        />
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
-              <div className="p-4 bg-slate-50 border-t flex justify-end gap-2">
-                <button onClick={cancelEditBlock} className="px-4 py-2 bg-white border rounded">Cancelar</button>
-                <button onClick={saveEditedBlock} className="px-4 py-2 bg-faktory-blue text-white rounded font-bold">Salvar</button>
+
+              <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex justify-end gap-2 shrink-0">
+                <button onClick={cancelEditBlock} className="px-4 py-2 bg-white border border-slate-200 rounded hover:bg-slate-50">Cancelar</button>
+                <button onClick={saveEditedBlock} className="px-4 py-2 bg-faktory-blue text-white rounded font-bold hover:bg-faktory-blue/90">Salvar</button>
               </div>
             </motion.div>
           </div>
