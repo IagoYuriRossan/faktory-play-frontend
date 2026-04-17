@@ -8,159 +8,111 @@ import {
   RefreshCw, MousePointer2, Settings,
   GripVertical, Copy, Pencil, Undo2, Redo2
 } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import { api } from '../../utils/api';
 import { auth } from '../../utils/firebase';
-import DOMPurify from 'dompurify';
-import { Trail, Module, Lesson } from '../../@types';
 import { cn } from '../../utils/utils';
-import { motion, AnimatePresence } from 'motion/react';
+import { Trail, Module, Lesson } from '../../@types/index';
+import DOMPurify from 'dompurify';
 
-export default function AdminTrilhaBuilder() {
-  const { id } = useParams();
+export default function TrilhaBuilder() {
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [trailId] = useState(() => id || `trail-${Date.now()}`);
-  const [loading, setLoading] = useState(!!id);
+  const trailId = id || '';
+
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
   const [activeLessonId, setActiveLessonId] = useState<string | null>(null);
-  const [showVideoModal, setShowVideoModal] = useState(false);
-  const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  const [isDirty, setIsDirty] = useState(false);
-  const [toast, setToast] = useState('');
-  const toastTimerRef = useRef<number | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const [showBlockEditor, setShowBlockEditor] = useState(false);
+  const [useWysiwygEditor, setUseWysiwygEditor] = useState(true);
+  const [editingBlockHtmlState, setEditingBlockHtmlState] = useState('');
+  const [editingBlockIdState, setEditingBlockIdState] = useState<string | null>(null);
+  const [editingBlockTypeState, setEditingBlockTypeState] = useState('');
   const [titleHovered, setTitleHovered] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
-  const [editingBlockIdState, setEditingBlockIdState] = useState<string | null>(null);
-  const [editingBlockHtmlState, setEditingBlockHtmlState] = useState<string>('');
-  const [editingBlockTypeState, setEditingBlockTypeState] = useState<string>('');
-  const [useWysiwygEditor, setUseWysiwygEditor] = useState<boolean>(true);
-  const wysiwygRef = useRef<HTMLDivElement | null>(null);
-  // Track which block is loaded into the contentEditable to avoid resetting innerHTML on every render
-  const wysiwygLoadedBlockRef = useRef<string | null>(null);
-  const editorHistoryRef = useRef<string[]>([]);
-  const editorHistoryIndexRef = useRef<number>(-1);
-  const editorLiveHtmlRef = useRef<string>('');
-  const editorHistoryTimerRef = useRef<number | null>(null);
+  const [showVideoModal, setShowVideoModal] = useState(false);
+
+  const editorHistoryRef = useRef<{ past: string[]; future: string[] }>({ past: [], future: [] });
+  const editorHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editorSelectionRef = useRef<Range | null>(null);
-  const [, setEditorHistoryVersion] = useState(0);
+  const wysiwygRef = useRef<HTMLDivElement | null>(null);
+  const editorLiveHtmlRef = useRef<string>('');
+  const wysiwygLoadedBlockRef = useRef<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
-  const saveEditorSelection = () => {
-    const editor = wysiwygRef.current;
-    if (!editor) return;
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    const range = sel.getRangeAt(0);
-    if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return;
-    editorSelectionRef.current = range.cloneRange();
+  const pushEditorHistory = (html: string) => {
+    editorHistoryRef.current.past.push(html);
+    editorHistoryRef.current.future = [];
   };
 
-  const restoreEditorSelection = () => {
-    const editor = wysiwygRef.current;
-    const saved = editorSelectionRef.current;
-    if (!editor || !saved) return false;
-    if (!editor.contains(saved.startContainer) || !editor.contains(saved.endContainer)) return false;
-    const sel = window.getSelection();
-    if (!sel) return false;
-    sel.removeAllRanges();
-    sel.addRange(saved);
-    return true;
-  };
-
-  const applyHistoryContent = (value: string) => {
-    setEditingBlockHtmlState(value);
-    if (useWysiwygEditor && wysiwygRef.current) {
-      wysiwygRef.current.innerHTML = value;
-    }
-  };
-
-  const initEditorHistory = (initialValue: string) => {
-    if (editorHistoryTimerRef.current) {
-      window.clearTimeout(editorHistoryTimerRef.current);
-      editorHistoryTimerRef.current = null;
-    }
-    editorHistoryRef.current = [initialValue];
-    editorHistoryIndexRef.current = 0;
-    editorLiveHtmlRef.current = initialValue;
-    setEditorHistoryVersion(v => v + 1);
-  };
-
-  const pushEditorHistory = (nextValue: string) => {
-    const history = editorHistoryRef.current;
-    const idx = editorHistoryIndexRef.current;
-    if (idx >= 0 && history[idx] === nextValue) return;
-    const trimmed = history.slice(0, idx + 1);
-    trimmed.push(nextValue);
-    const maxHistory = 100;
-    if (trimmed.length > maxHistory) {
-      trimmed.shift();
-    }
-    editorHistoryRef.current = trimmed;
-    editorHistoryIndexRef.current = trimmed.length - 1;
-    setEditorHistoryVersion(v => v + 1);
+  const initEditorHistory = (html: string) => {
+    editorHistoryRef.current = { past: [], future: [] };
+    editorLiveHtmlRef.current = html;
   };
 
   const flushEditorHistory = () => {
     if (editorHistoryTimerRef.current) {
       window.clearTimeout(editorHistoryTimerRef.current);
       editorHistoryTimerRef.current = null;
-      pushEditorHistory(editorLiveHtmlRef.current);
     }
+    pushEditorHistory(editorLiveHtmlRef.current);
   };
 
-  const scheduleEditorHistoryPush = (value: string) => {
+  const canUndoEditor = () => editorHistoryRef.current.past.length > 0;
+  const canRedoEditor = () => editorHistoryRef.current.future.length > 0;
+
+  const handleEditorValueChange = (value: string) => {
     editorLiveHtmlRef.current = value;
-    if (editorHistoryTimerRef.current) {
-      window.clearTimeout(editorHistoryTimerRef.current);
-    }
-    editorHistoryTimerRef.current = window.setTimeout(() => {
-      editorHistoryTimerRef.current = null;
-      pushEditorHistory(editorLiveHtmlRef.current);
-    }, 200);
+    setEditingBlockHtmlState(value);
+    pushEditorHistory(value);
   };
-
-  const canUndoEditor = () => editorHistoryIndexRef.current > 0;
-  const canRedoEditor = () => editorHistoryIndexRef.current < editorHistoryRef.current.length - 1;
 
   const handleUndoEditor = () => {
-    flushEditorHistory();
-    if (!canUndoEditor()) return;
-    editorHistoryIndexRef.current -= 1;
-    applyHistoryContent(editorHistoryRef.current[editorHistoryIndexRef.current]);
+    if (editorHistoryRef.current.past.length === 0) return;
+    const current = editorLiveHtmlRef.current;
+    editorHistoryRef.current.future.push(current);
+    const prev = editorHistoryRef.current.past.pop()!;
+    editorLiveHtmlRef.current = prev;
+    setEditingBlockHtmlState(prev);
+    if (wysiwygRef.current) wysiwygRef.current.innerHTML = prev;
   };
 
   const handleRedoEditor = () => {
-    flushEditorHistory();
-    if (!canRedoEditor()) return;
-    editorHistoryIndexRef.current += 1;
-    applyHistoryContent(editorHistoryRef.current[editorHistoryIndexRef.current]);
+    if (editorHistoryRef.current.future.length === 0) return;
+    const current = editorLiveHtmlRef.current;
+    editorHistoryRef.current.past.push(current);
+    const next = editorHistoryRef.current.future.pop()!;
+    editorLiveHtmlRef.current = next;
+    setEditingBlockHtmlState(next);
+    if (wysiwygRef.current) wysiwygRef.current.innerHTML = next;
   };
 
-  const handleEditorValueChange = (nextValue: string) => {
-    editorLiveHtmlRef.current = nextValue;
-    setEditingBlockHtmlState(nextValue);
-    pushEditorHistory(nextValue);
+  const saveEditorSelection = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    editorSelectionRef.current = sel.getRangeAt(0).cloneRange();
   };
 
-  const handleWysiwygInput = (nextValue: string) => {
-    editorLiveHtmlRef.current = nextValue;
-    scheduleEditorHistoryPush(nextValue);
+  const restoreEditorSelection = () => {
+    if (!editorSelectionRef.current) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    try {
+      sel.removeAllRanges();
+      sel.addRange(editorSelectionRef.current);
+    } catch (_) { /* stale range */ }
   };
 
-  // Populate contentEditable innerHTML only when the editing block changes (not on every render)
-  useEffect(() => {
-    if (useWysiwygEditor && wysiwygRef.current && editingBlockIdState && editingBlockIdState !== wysiwygLoadedBlockRef.current) {
-      wysiwygRef.current.innerHTML = editingBlockHtmlState;
-      wysiwygLoadedBlockRef.current = editingBlockIdState;
-    }
-  }, [editingBlockIdState, useWysiwygEditor]);
-  // Also sync when toggling from source to WYSIWYG view
-  useEffect(() => {
-    if (useWysiwygEditor && wysiwygRef.current && editingBlockIdState) {
-      wysiwygRef.current.innerHTML = editingBlockHtmlState;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useWysiwygEditor]);
+  const handleWysiwygInput = (html: string) => {
+    editorLiveHtmlRef.current = html;
+    setEditingBlockHtmlState(html);
+    if (editorHistoryTimerRef.current) window.clearTimeout(editorHistoryTimerRef.current);
+    editorHistoryTimerRef.current = setTimeout(() => { pushEditorHistory(html); }, 300);
+  };
 
   useEffect(() => {
     if (!showBlockEditor) return;
@@ -400,6 +352,7 @@ export default function AdminTrilhaBuilder() {
   };
 
   const reorderModule = (dragId: string, dropId: string) => {
+    // Note: reordering supports only top-level modules in this implementation
     setTrailData(prev => {
       const modules = [...prev.modules];
       const fromIdx = modules.findIndex(m => m.id === dragId);
@@ -410,6 +363,67 @@ export default function AdminTrilhaBuilder() {
       return { ...prev, modules };
     });
     setIsDirty(true);
+  };
+
+  // Helpers to move modules between levels (convert module into submodule of parent)
+  const findAndRemoveModule = (modules: Module[], id: string) : { removed?: Module; modules: Module[] } => {
+    for (let i = 0; i < modules.length; i++) {
+      const m = modules[i];
+      if (m.id === id) {
+        const copy = [...modules];
+        const [removed] = copy.splice(i,1);
+        return { removed, modules: copy };
+      }
+      if (m.submodules && m.submodules.length) {
+        const res = findAndRemoveModule(m.submodules, id);
+        if (res.removed) {
+          const copy = modules.map(x => x.id === m.id ? { ...m, submodules: res.modules } : x);
+          return { removed: res.removed, modules: copy };
+        }
+      }
+    }
+    return { modules };
+  };
+
+  const findModuleById = (modules: Module[], id: string) : Module | undefined => {
+    for (const m of modules) {
+      if (m.id === id) return m;
+      if (m.submodules) {
+        const found = findModuleById(m.submodules, id);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  };
+
+  const moveModuleInto = (moduleId: string, parentId: string) => {
+    if (moduleId === parentId) return;
+    setTrailData(prev => {
+      // remove module from wherever it is
+      const cloned = JSON.parse(JSON.stringify(prev.modules)) as Module[];
+      const { removed, modules: without } = findAndRemoveModule(cloned, moduleId);
+      if (!removed) return prev;
+      // find parent in resulting tree
+      const parent = findModuleById(without, parentId);
+      if (!parent) {
+        // If parent not found at nested level, try top-level
+        const topIdx = without.findIndex(m => m.id === parentId);
+        if (topIdx !== -1) {
+          const copy = [...without];
+          copy[topIdx].submodules = [...(copy[topIdx].submodules || []), removed];
+          return { ...prev, modules: copy };
+        }
+        return prev;
+      }
+      // attach as submodule
+      const attach = (ms: Module[]): Module[] => ms.map(x => {
+        if (x.id === parent.id) return { ...x, submodules: [...(x.submodules || []), removed] };
+        return { ...x, submodules: x.submodules ? attach(x.submodules) : x.submodules };
+      });
+      return { ...prev, modules: attach(without) };
+    });
+    setIsDirty(true);
+    showToast('Módulo movido para dentro do módulo selecionado');
   };
 
   const reorderLesson = (moduleId: string, dragId: string, dropId: string) => {
@@ -597,10 +611,13 @@ export default function AdminTrilhaBuilder() {
   };
 
   const updateModuleTitle = (moduleId: string, title: string) => {
-    setTrailData(prev => ({
-      ...prev,
-      modules: prev.modules.map(m => m.id === moduleId ? { ...m, title } : m)
-    }));
+    const updateInList = (list: Module[]): Module[] =>
+      list.map(m =>
+        m.id === moduleId
+          ? { ...m, title }
+          : { ...m, submodules: m.submodules ? updateInList(m.submodules) : m.submodules }
+      );
+    setTrailData(prev => ({ ...prev, modules: updateInList(prev.modules) }));
     setIsDirty(true);
   };
 
@@ -789,6 +806,181 @@ export default function AdminTrilhaBuilder() {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const blockRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [dragPreview, setDragPreview] = useState<{ type: 'none' | 'title' | 'content' | 'block'; id?: string; rect?: { top: number; left: number; width: number; height: number }; pos?: 'before' | 'after'; source?: 'list' | 'preview' }>({ type: 'none' });
+  const [moduleParentMenuOpenId, setModuleParentMenuOpenId] = useState<string | null>(null);
+
+  const isDescendantModule = (modules: Module[], parentId: string, candidateId: string): boolean => {
+    const parent = findModuleById(modules, parentId);
+    if (!parent || !parent.submodules) return false;
+    const recurse = (list: Module[]): boolean => {
+      for (const m of list) {
+        if (m.id === candidateId) return true;
+        if (m.submodules && recurse(m.submodules)) return true;
+      }
+      return false;
+    };
+    return recurse(parent.submodules);
+  };
+
+  const renderModule = (module: Module, depth: number, mIndex: number) => {
+    return (
+      <div key={module.id} className="space-y-1"
+        draggable
+        onDragStart={(e) => { dragModuleIdRef.current = module.id; e.dataTransfer.effectAllowed = 'move'; }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => { e.preventDefault(); const dragId = dragModuleIdRef.current; if (dragId && dragId !== module.id) reorderModule(dragId, module.id); dragModuleIdRef.current = null; }}
+      >
+        <div
+          className={cn(
+            "flex items-center justify-between p-2 rounded-md cursor-pointer group transition-all",
+            activeModuleId === module.id ? "bg-slate-50" : "hover:bg-slate-50"
+          )}
+          onClick={() => setActiveModuleId(module.id)}
+        >
+          <div className="flex items-center gap-2 flex-1">
+            <button onClick={(e) => { e.stopPropagation(); toggleModule(module.id); }} aria-expanded={!!expandedModules[module.id]} title={expandedModules[module.id] ? 'Recolher etapa' : 'Expandir etapa'} className="p-1 text-slate-400 hover:text-faktory-blue transition-transform">
+              <ChevronDown size={14} style={{ transform: expandedModules[module.id] ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform .12s' }} />
+            </button>
+            <div className="w-1 h-4 bg-slate-200 rounded-full group-hover:bg-faktory-blue transition-all"></div>
+            <div className="text-xs font-bold text-slate-400 mr-2">{mIndex + 1}.</div>
+            <input
+              className="text-xs font-bold text-slate-600 bg-transparent outline-none w-full"
+              value={module.title}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onChange={(e) => updateModuleTitle(module.id, e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); } }}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => { e.stopPropagation(); addLesson(module.id); }}
+              title="Adicionar aula"
+              className="text-slate-400 hover:text-faktory-blue p-1 rounded"
+            >
+              <Plus size={14} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); setModuleParentMenuOpenId(prev => prev === module.id ? null : module.id); }}
+              title="Aninhar módulo (mover para dentro de outro)"
+              className="text-slate-400 hover:text-faktory-blue p-1 rounded"
+            >
+              <Layers size={14} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); moveModule(module.id, -1); }}
+              title="Mover etapa para cima"
+              className="text-slate-400 hover:text-faktory-blue p-1 rounded"
+            >
+              <ChevronUp size={14} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); moveModule(module.id, 1); }}
+              title="Mover etapa para baixo"
+              className="text-slate-400 hover:text-faktory-blue p-1 rounded"
+            >
+              <ChevronDown size={14} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); removeModule(module.id); }}
+              title="Remover etapa"
+              className="text-slate-400 hover:text-red-500 p-1 rounded"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* parent selection menu */}
+        {moduleParentMenuOpenId === module.id && (
+          <div className="pl-6">
+            <div className="bg-white p-2 border rounded shadow-sm">
+              <div className="text-xs text-slate-500 mb-2">Escolher módulo pai:</div>
+              <div className="flex flex-col gap-1 max-h-40 overflow-auto">
+                {trailData.modules.map((cand) => (
+                  cand.id === module.id ? null : (
+                    <button key={cand.id} onClick={() => { moveModuleInto(module.id, cand.id); setModuleParentMenuOpenId(null); }} className="text-left px-2 py-1 rounded hover:bg-slate-50">{cand.title}</button>
+                  )
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {expandedModules[module.id] && (
+          <div className="pl-6 space-y-1">
+            {module.lessons.map((lesson, lIndex) => (
+              <div key={lesson.id} className="space-y-1"
+                draggable
+                onDragStart={(e) => { dragLessonIdRef.current = lesson.id; e.dataTransfer.effectAllowed = 'move'; }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); const dragId = dragLessonIdRef.current; if (dragId && dragId !== lesson.id) reorderLesson(module.id, dragId, lesson.id); dragLessonIdRef.current = null; }}
+              >
+                {/* existing lesson rendering (reuse existing markup) */}
+                <div
+                  className={cn(
+                    "flex items-center justify-between p-2 rounded-md cursor-pointer text-[11px] transition-all",
+                    (activeLessonId === lesson.id && !activeSublessonId) ? "bg-blue-50 text-faktory-blue font-bold" : "text-slate-500 hover:bg-slate-50"
+                  )}
+                  onClick={() => {
+                    setActiveModuleId(module.id);
+                    setActiveLessonId(lesson.id);
+                    setActiveSublessonId(null);
+                  }}
+                >
+                  <div className="flex items-center gap-2 w-full justify-between">
+                    <span className="flex-1" onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(lesson.id, lesson.title); }}>{lesson.title ? lesson.title : '(Sem título)'}</span>
+                    <div className="flex items-center gap-2">
+                      <button onClick={(e) => { e.stopPropagation(); addLesson(module.id, lesson.id); }} title="Adicionar subaula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><Plus size={14} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, lesson.id, -1); }} title="Mover aula para cima" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronUp size={14} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, lesson.id, 1); }} title="Mover aula para baixo" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={14} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); startEditLesson(lesson.id, lesson.title); }} title="Renomear aula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={14} style={{ transform: 'rotate(-90deg)' }} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, lesson.id); }} title="Remover aula" className="text-slate-300 hover:text-red-500 p-1 rounded"><Trash2 size={14} /></button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* sublessons */}
+                {(lesson.sublessons || []).map((sub, sIndex) => (
+                  <div key={sub.id} className={cn(
+                    "flex items-center justify-between p-1 rounded cursor-pointer text-[11px] transition-all ml-4",
+                    activeSublessonId === sub.id ? "bg-blue-50 text-faktory-blue font-semibold" : "text-slate-400 hover:bg-slate-50"
+                  )} onClick={() => { setActiveModuleId(module.id); setActiveLessonId(lesson.id); setActiveSublessonId(sub.id); }}>
+                    {editingLessonId === sub.id ? (
+                      <div className="flex items-center gap-2 w-full">
+                        <input
+                          autoFocus
+                          className="w-full text-sm px-2 py-1 border border-slate-200 rounded"
+                          value={editingLessonTitle}
+                          onChange={(e) => setEditingLessonTitle(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveEditLesson(); } }}
+                        />
+                        <button onClick={(e) => { e.stopPropagation(); saveEditLesson(); }} className="px-2 py-1 bg-faktory-blue text-white rounded text-xs">Salvar</button>
+                        <button onClick={(e) => { e.stopPropagation(); cancelEditLesson(); }} className="px-2 py-1 border rounded text-xs">Cancelar</button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 w-full justify-between">
+                        <span className="flex-1">{sub.title}</span>
+                        <div className="flex items-center gap-2">
+                          <button onClick={(e) => { e.stopPropagation(); startEditLesson(sub.id, sub.title); }} className="text-slate-400 hover:text-faktory-blue p-1 rounded"><Pencil size={14} /></button>
+                          <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, sub.id, lesson.id); }} className="text-slate-300 hover:text-red-500 p-1 rounded"><Trash2 size={14} /></button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+            {/* render nested submodules, if any */}
+            {(module.submodules || []).map((sm, idx) => (
+              <div key={sm.id} className="pl-4">
+                {renderModule(sm, depth+1, idx)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const reorderBlock = (dragId: string, dropId: string) => {
     if (!activeLesson) return;
@@ -1023,7 +1215,7 @@ export default function AdminTrilhaBuilder() {
   const showToast = (msg: string) => {
     setToast(msg);
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(''), 3000);
+    toastTimerRef.current = window.setTimeout(() => setToast(''), 3000) as unknown as number;
   };
 
   const genBlock = (html: string, type = 'custom') => {
@@ -1629,163 +1821,8 @@ export default function AdminTrilhaBuilder() {
                   <div className="text-[13px] mb-3">Use o botão "Adicionar etapa" acima para criar uma nova etapa.</div>
                 </div>
             ) : (
-            trailData.modules.map((module, mIndex) => (
-              <div key={module.id} className="space-y-1"
-                draggable
-                onDragStart={(e) => { dragModuleIdRef.current = module.id; e.dataTransfer.effectAllowed = 'move'; }}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); const dragId = dragModuleIdRef.current; if (dragId && dragId !== module.id) reorderModule(dragId, module.id); dragModuleIdRef.current = null; }}
-              >
-                <div 
-                  className={cn(
-                    "flex items-center justify-between p-2 rounded-md cursor-pointer group transition-all",
-                    activeModuleId === module.id ? "bg-slate-50" : "hover:bg-slate-50"
-                  )}
-                  onClick={() => setActiveModuleId(module.id)}
-                >
-                  <div className="flex items-center gap-2 flex-1">
-                    <button onClick={(e) => { e.stopPropagation(); toggleModule(module.id); }} aria-expanded={!!expandedModules[module.id]} title={expandedModules[module.id] ? 'Recolher etapa' : 'Expandir etapa'} className="p-1 text-slate-400 hover:text-faktory-blue transition-transform">
-                      <ChevronDown size={14} style={{ transform: expandedModules[module.id] ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform .12s' }} />
-                    </button>
-                    <div className="w-1 h-4 bg-slate-200 rounded-full group-hover:bg-faktory-blue transition-all"></div>
-                    <div className="text-xs font-bold text-slate-400 mr-2">{mIndex + 1}.</div>
-                    <input 
-                      className="text-xs font-bold text-slate-600 bg-transparent outline-none w-full"
-                      value={module.title}
-                      onChange={(e) => updateModuleTitle(module.id, e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); } }}
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                          <button 
-                        onClick={(e) => { e.stopPropagation(); addLesson(module.id); }}
-                        title="Adicionar aula"
-                        className="text-slate-400 hover:text-faktory-blue p-1 rounded"
-                      >
-                        <Plus size={14} />
-                      </button>
-                          {imageUploading && activeModuleId === module.id && (
-                            <div className="flex items-center gap-2 px-2">
-                              <div className="text-xs text-slate-400">Enviando imagem... {uploadProgress}%</div>
-                              <div className="w-24 h-2 bg-slate-200 rounded overflow-hidden">
-                                <div className="bg-faktory-blue h-2 rounded" style={{ width: `${uploadProgress}%` }} />
-                              </div>
-                            </div>
-                          )}
-                      <button
-                        onClick={(e) => { e.stopPropagation(); moveModule(module.id, -1); }}
-                        title="Mover etapa para cima"
-                        className="text-slate-400 hover:text-faktory-blue p-1 rounded"
-                      >
-                        <ChevronUp size={14} />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); moveModule(module.id, 1); }}
-                        title="Mover etapa para baixo"
-                        className="text-slate-400 hover:text-faktory-blue p-1 rounded"
-                      >
-                        <ChevronDown size={14} />
-                      </button>
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); removeModule(module.id); }}
-                        title="Remover etapa"
-                        className="text-slate-400 hover:text-red-500 p-1 rounded"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                  </div>
-                </div>
-
-                  {expandedModules[module.id] && (
-                <div className="pl-6 space-y-1">
-                  {module.lessons.map((lesson, lIndex) => (
-                    <div key={lesson.id} className="space-y-1"
-                      draggable
-                      onDragStart={(e) => { dragLessonIdRef.current = lesson.id; e.dataTransfer.effectAllowed = 'move'; }}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => { e.preventDefault(); const dragId = dragLessonIdRef.current; if (dragId && dragId !== lesson.id) reorderLesson(module.id, dragId, lesson.id); dragLessonIdRef.current = null; }}
-                    >
-                      <div 
-                        className={cn(
-                          "flex items-center justify-between p-2 rounded-md cursor-pointer text-[11px] transition-all",
-                          (activeLessonId === lesson.id && !activeSublessonId) ? "bg-blue-50 text-faktory-blue font-bold" : "text-slate-500 hover:bg-slate-50"
-                        )}
-                        onClick={() => {
-                          setActiveModuleId(module.id);
-                          setActiveLessonId(lesson.id);
-                          setActiveSublessonId(null);
-                        }}
-                      >
-                        {editingLessonId === lesson.id ? (
-                          <div className="flex items-center gap-2 w-full">
-                            <input
-                              autoFocus
-                              className="w-full text-sm px-2 py-1 border border-slate-200 rounded"
-                              value={editingLessonTitle}
-                              onChange={(e) => setEditingLessonTitle(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveEditLesson(); } }}
-                            />
-                            <button onClick={(e) => { e.stopPropagation(); saveEditLesson(); }} className="px-2 py-1 bg-faktory-blue text-white rounded text-xs">Salvar</button>
-                            <button onClick={(e) => { e.stopPropagation(); cancelEditLesson(); }} className="px-2 py-1 border rounded text-xs">Cancelar</button>
-                          </div>
-                          ) : (
-                          <div className="flex items-center gap-2 w-full justify-between">
-                            <span className="flex-1" onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(lesson.id, lesson.title); }}>{mIndex + 1}.{lIndex + 1} - {lesson.title}</span>
-                            <div className="flex items-center gap-2">
-                              <button onClick={(e) => { e.stopPropagation(); addLesson(module.id, lesson.id); }} title="Adicionar subaula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><Plus size={14} /></button>
-                              <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, lesson.id, -1); }} title="Mover aula para cima" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronUp size={14} /></button>
-                              <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, lesson.id, 1); }} title="Mover aula para baixo" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={14} /></button>
-                              <button onClick={(e) => { e.stopPropagation(); startEditLesson(lesson.id, lesson.title); }} title="Renomear aula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={14} style={{ transform: 'rotate(-90deg)' }} /></button>
-                              <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, lesson.id); }} title="Remover aula" className="text-slate-300 hover:text-red-500 p-1 rounded"><Trash2 size={14} /></button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Sublessons */}
-                      {(lesson.sublessons || []).map((sub, sIndex) => (
-                        <div key={sub.id} className={cn(
-                          "flex items-center justify-between p-1 rounded cursor-pointer text-[11px] transition-all ml-4",
-                          activeSublessonId === sub.id ? "bg-blue-50 text-faktory-blue font-semibold" : "text-slate-400 hover:bg-slate-50"
-                        )} onClick={() => { setActiveModuleId(module.id); setActiveLessonId(lesson.id); setActiveSublessonId(sub.id); }}>
-                          {editingLessonId === sub.id ? (
-                            <div className="flex items-center gap-2 w-full">
-                              <input
-                                autoFocus
-                                className="w-full text-sm px-2 py-1 border border-slate-200 rounded"
-                                value={editingLessonTitle}
-                                onChange={(e) => setEditingLessonTitle(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveEditLesson(); } }}
-                              />
-                              <button onClick={(e) => { e.stopPropagation(); saveEditLesson(); }} className="px-2 py-1 bg-faktory-blue text-white rounded text-xs">Salvar</button>
-                              <button onClick={(e) => { e.stopPropagation(); cancelEditLesson(); }} className="px-2 py-1 border rounded text-xs">Cancelar</button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-2 w-full justify-between">
-                              <span className="flex-1 text-sm text-slate-500" onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(sub.id, sub.title, lesson.id); }}>{mIndex + 1}.{lIndex + 1}.{sIndex + 1} - {sub.title}</span>
-                              <div className="flex items-center gap-2">
-                                  <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, sub.id, -1, lesson.id); }} title="Mover subaula para cima" aria-label="Mover subaula para cima" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronUp size={12} /></button>
-                                  <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, sub.id, 1, lesson.id); }} title="Mover subaula para baixo" aria-label="Mover subaula para baixo" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={12} /></button>
-                                  <button onClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(sub.id, sub.title, lesson.id); }} title="Renomear subaula" aria-label="Renomear subaula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={12} style={{ transform: 'rotate(-90deg)' }} /></button>
-                                  <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, sub.id, lesson.id); }} title="Remover subaula" aria-label="Remover subaula" className="text-slate-400 hover:text-red-500 p-1 rounded"><Trash2 size={12} /></button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                  <button 
-                    onClick={() => addLesson(module.id)}
-                    className="flex items-center gap-2 p-2 text-[10px] text-slate-400 hover:text-faktory-blue transition-all"
-                  >
-                    <Plus size={12} />
-                    Nova aula
-                  </button>
-                </div>
-                )}
-              </div>
-            )))}
+            trailData.modules.map((module, mIndex) => renderModule(module, 0, mIndex))
+            )}
           </div>
         </aside>
 
@@ -2709,6 +2746,14 @@ export default function AdminTrilhaBuilder() {
                       <ul className="list-disc pl-6 mt-2">
                         {m.lessons.map(l => <li key={l.id}>{l.title}</li>)}
                       </ul>
+                      {(m.submodules || []).map(sm => (
+                        <div key={sm.id} className="mt-3 ml-4 p-3 border rounded bg-slate-50">
+                          <h5 className="font-semibold">{sm.title}</h5>
+                          <ul className="list-disc pl-6 mt-2">
+                            {sm.lessons.map(l => <li key={l.id}>{l.title}</li>)}
+                          </ul>
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>

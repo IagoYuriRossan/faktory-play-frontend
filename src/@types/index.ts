@@ -53,6 +53,7 @@ export interface Module {
   id: string;
   title: string;
   lessons: Lesson[];
+  submodules?: Module[];
 }
 
 export interface Trail {

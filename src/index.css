@@ -13,3 +13,25 @@
     @apply font-sans text-slate-700 antialiased bg-faktory-bg;
   }
 }
+
+@layer components {
+  .rich-text-content ul,
+  .rich-text-editor ul {
+    list-style: disc;
+    margin: 0.75rem 0;
+    padding-left: 1.5rem;
+  }
+
+  .rich-text-content ol,
+  .rich-text-editor ol {
+    list-style: decimal;
+    margin: 0.75rem 0;
+    padding-left: 1.5rem;
+  }
+
+  .rich-text-content li,
+  .rich-text-editor li {
+    display: list-item;
+    margin: 0.25rem 0;
+  }
+}
