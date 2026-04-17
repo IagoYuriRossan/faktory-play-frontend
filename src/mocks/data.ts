@@ -178,7 +178,7 @@ export const MOCK_COMPANIES: Company[] = [
 ];
 
 export const MOCK_USERS: User[] = [
-  { id: 'u1', name: 'Admin Faktory', email: 'admin@faktory.com', role: 'admin' },
+  { id: 'u1', name: 'Admin Faktory', email: 'admin@faktory.com', role: 'superadmin' },
   { id: 'u2', name: 'João Aluno', email: 'joao@silva.com', role: 'student', companyId: 'c1' }
 ];
 
