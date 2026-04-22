@@ -198,15 +198,43 @@ export default function TrilhaBuilder() {
   const [editingLessonTitle, setEditingLessonTitle] = useState('');
   const [editingLessonParentId, setEditingLessonParentId] = useState<string | null>(null);
   const [activeSublessonId, setActiveSublessonId] = useState<string | null>(null);
+  const [dragLessonTargetId, setDragLessonTargetId] = useState<string | null>(null);
+  const [dragLessonOnModuleId, setDragLessonOnModuleId] = useState<string | null>(null);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
   const [expandedModules, setExpandedModules] = useState<Record<string, boolean>>({});
+  const [expandedLessons, setExpandedLessons] = useState<Record<string, boolean>>({});
   
   const [trailData, setTrailData] = useState({
     title: '',
     description: '',
     modules: [] as Module[]
   });
+
+  // ── localStorage backup key ──────────────────────────────────────────────
+  const localKey = `trail-backup-${trailId}`;
+
+  // Persist every change to localStorage so data survives CORS/network failures
+  useEffect(() => {
+    if (!trailData.modules.length) return;
+    try {
+      localStorage.setItem(localKey, JSON.stringify({ savedAt: Date.now(), data: trailData }));
+    } catch (_) { /* storage full or unavailable */ }
+  }, [trailData]);
+
+  const [hasLocalBackup, setHasLocalBackup] = useState(false);
+
+  const restoreLocalBackup = () => {
+    try {
+      const raw = localStorage.getItem(localKey);
+      if (!raw) return;
+      const { data } = JSON.parse(raw);
+      setTrailData(data);
+      setIsDirty(true);
+      showToast('Dados restaurados do backup local');
+      setHasLocalBackup(false);
+    } catch (_) { showToast('Erro ao restaurar backup local'); }
+  };
 
   // Auto-save logic
   useEffect(() => {
@@ -238,36 +266,50 @@ export default function TrilhaBuilder() {
       if (!id) return;
       try {
         const data = await api.get<Trail>(`/api/trails/${id}`);
-        // If this is the Faktory One template and the user asked to start fresh,
-        // clear all modules so they can re-add items from scratch.
-            if (data.title === 'Faktory One - Implantação') {
-              const cleared = { title: data.title, description: data.description, modules: [] as Module[] };
-          setTrailData(cleared);
-          setIsDirty(true);
+        setTrailData({
+          title: data.title,
+          description: data.description,
+          modules: data.modules,
+        });
+
+        // Check if backend data appears empty (all modules/lessons have no titles) while a local backup exists
+        const allEmpty = data.modules.length > 0 && data.modules.every(m => !m.title && m.lessons.every(l => !l.title));
+        const backupRaw = localStorage.getItem(`trail-backup-${id}`);
+        if (allEmpty && backupRaw) {
           try {
-            const finalData: Trail = { id: trailId, ...cleared };
-            await api.put(`/api/trails/${trailId}`, finalData);
-            showToast('Conteúdo da trilha Faktory One apagado');
-          } catch (err) {
-            console.error('Erro ao persistir limpeza da trilha:', err);
-            showToast('Trilha limpa localmente; salve para persistir');
+            const { data: backupData } = JSON.parse(backupRaw);
+            const backupHasTitles = backupData?.modules?.some((m: Module) => !!m.title);
+            if (backupHasTitles) setHasLocalBackup(true);
+          } catch (_) { /* noop */ }
+        }
+        // Encontra o primeiro módulo (em qualquer nível) que tenha pelo menos uma aula
+        const findFirstModuleWithLesson = (modules: Module[]): { moduleId: string; lessonId: string } | null => {
+          for (const m of modules) {
+            if (m.lessons.length > 0) return { moduleId: m.id, lessonId: m.lessons[0].id };
+            if (m.submodules?.length) {
+              const found = findFirstModuleWithLesson(m.submodules);
+              if (found) return found;
+            }
           }
-        } else {
-          setTrailData({
-            title: data.title,
-            description: data.description,
-            modules: data.modules,
+          return null;
+        };
+
+        const first = findFirstModuleWithLesson(data.modules);
+        if (first) {
+          setActiveModuleId(first.moduleId);
+          setActiveLessonId(first.lessonId);
+        }
+
+        // Expande todos os módulos e submodules recursivamente
+        const collectExpanded = (modules: Module[], acc: Record<string, boolean>) => {
+          modules.forEach(m => {
+            if (acc[m.id] === undefined) acc[m.id] = true;
+            if (m.submodules?.length) collectExpanded(m.submodules, acc);
           });
-        }
-        if (data.modules.length > 0) {
-          setActiveModuleId(data.modules[0].id);
-          if (data.modules[0].lessons.length > 0) {
-            setActiveLessonId(data.modules[0].lessons[0].id);
-          }
-        }
+        };
         setExpandedModules(prev => {
           const next = { ...prev };
-          data.modules.forEach(m => { if (next[m.id] === undefined) next[m.id] = true; });
+          collectExpanded(data.modules, next);
           return next;
         });
       } catch (error) {
@@ -567,6 +609,25 @@ export default function TrilhaBuilder() {
     })();
   };
 
+  // Promove submódulos de módulos sem título para o nível superior ("soltar" subetapas)
+  const flattenUntitledModules = () => {
+    setTrailData(prev => {
+      const modules = prev.modules || [];
+      const newModules: Module[] = [];
+      modules.forEach(m => {
+        if ((!m.title || m.title.trim() === '') && m.submodules && m.submodules.length > 0) {
+          // promote submodules as top-level modules (preserve order)
+          newModules.push(...m.submodules);
+        } else {
+          newModules.push(m);
+        }
+      });
+      return { ...prev, modules: newModules };
+    });
+    setIsDirty(true);
+    showToast('Subetapas soltadas');
+  };
+
   const addModule = () => {
     const newLessonId = genId();
     const newModuleId = genId();
@@ -591,7 +652,7 @@ export default function TrilhaBuilder() {
     setExpandedModules(prev => ({ ...prev, [newModule.id]: true }));
 
     console.debug('addModule: created', newModule);
-    showToast('Etapa criada');
+    showToast('Módulo criado');
 
     // If trail exists on server, try creating module via nested POST; fallback to global PUT
     if (id) {
@@ -645,17 +706,18 @@ export default function TrilhaBuilder() {
       videoPosition: 'top',
       content: '',
     };
+    // Helper: apply a transform to the module matching moduleId anywhere in the tree
+    const applyToModule = (modules: Module[], fn: (m: Module) => Module): Module[] =>
+      modules.map(m => {
+        if (m.id === moduleId) return fn(m);
+        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, fn) };
+        return m;
+      });
     setTrailData(prev => ({
       ...prev,
-      modules: prev.modules.map(m => {
-        if (m.id !== moduleId) return m;
-        if (!parentLessonId) {
-          return { ...m, lessons: [...m.lessons, newLesson] };
-        }
-        return {
-          ...m,
-          lessons: m.lessons.map(l => l.id === parentLessonId ? { ...l, sublessons: [...(l.sublessons || []), newLesson] } : l)
-        };
+      modules: applyToModule(prev.modules, m => {
+        if (!parentLessonId) return { ...m, lessons: [...m.lessons, newLesson] };
+        return { ...m, lessons: m.lessons.map(l => l.id === parentLessonId ? { ...l, sublessons: [...(l.sublessons || []), newLesson] } : l) };
       })
     }));
     setIsDirty(true);
@@ -711,9 +773,15 @@ export default function TrilhaBuilder() {
   };
 
   const moveLesson = (moduleId: string, lessonId: string, dir: number, parentLessonId?: string) => {
-    setTrailData(prev => {
-      const modules = prev.modules.map(m => {
-        if (m.id !== moduleId) return m;
+    const applyToModule = (modules: Module[], fn: (m: Module) => Module): Module[] =>
+      modules.map(m => {
+        if (m.id === moduleId) return fn(m);
+        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, fn) };
+        return m;
+      });
+    setTrailData(prev => ({
+      ...prev,
+      modules: applyToModule(prev.modules, m => {
         if (!parentLessonId) {
           const lessons = [...m.lessons];
           const idx = lessons.findIndex(l => l.id === lessonId);
@@ -736,9 +804,8 @@ export default function TrilhaBuilder() {
             return { ...l, sublessons: sub };
           })
         };
-      });
-      return { ...prev, modules };
-    });
+      })
+    }));
     setIsDirty(true);
   };
 
@@ -801,12 +868,97 @@ export default function TrilhaBuilder() {
   const dragPageTitleRef = useRef<boolean>(false);
   const dragImageRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Sync the inline title editor only when the active lesson changes — NOT on every re-render.
+  // Using dangerouslySetInnerHTML would reset the user's edits on any unrelated state update.
+  useEffect(() => {
+    const el = titleInputRef.current as HTMLDivElement | null;
+    if (!el) return;
+    const al = getActiveLesson();
+    el.innerHTML = (al as any)?.titleHtml || (al?.title ? `<h2>${al.title}</h2>` : '');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLessonId]);
   const blocksAreaRef = useRef<HTMLDivElement | null>(null);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const blockRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [dragPreview, setDragPreview] = useState<{ type: 'none' | 'title' | 'content' | 'block'; id?: string; rect?: { top: number; left: number; width: number; height: number }; pos?: 'before' | 'after'; source?: 'list' | 'preview' }>({ type: 'none' });
   const [moduleParentMenuOpenId, setModuleParentMenuOpenId] = useState<string | null>(null);
+
+  // ── Lesson tree helpers (cross-module) ──────────────────────────────────
+  const removeLessonFromTree = (lessons: Lesson[], id: string): { removed?: Lesson; lessons: Lesson[] } => {
+    for (let i = 0; i < lessons.length; i++) {
+      if (lessons[i].id === id) {
+        const copy = [...lessons];
+        const [removed] = copy.splice(i, 1);
+        return { removed, lessons: copy };
+      }
+      if (lessons[i].sublessons?.length) {
+        const res = removeLessonFromTree(lessons[i].sublessons!, id);
+        if (res.removed) {
+          const copy = lessons.map((l, idx) => idx === i ? { ...l, sublessons: res.lessons } : l);
+          return { removed: res.removed, lessons: copy };
+        }
+      }
+    }
+    return { lessons };
+  };
+
+  const removeLessonFromAllModules = (modules: Module[], lessonId: string): { removed?: Lesson; modules: Module[] } => {
+    let removed: Lesson | undefined;
+    const updated = modules.map(m => {
+      const res = removeLessonFromTree(m.lessons, lessonId);
+      if (res.removed) { removed = res.removed; return { ...m, lessons: res.lessons }; }
+      if (m.submodules) {
+        const sub = removeLessonFromAllModules(m.submodules, lessonId);
+        if (sub.removed) { removed = sub.removed; return { ...m, submodules: sub.modules }; }
+      }
+      return m;
+    });
+    return { removed, modules: updated };
+  };
+
+  const addLessonAsSublesson = (lessons: Lesson[], targetId: string, toAdd: Lesson): Lesson[] =>
+    lessons.map(l => {
+      if (l.id === targetId) return { ...l, sublessons: [...(l.sublessons || []), toAdd] };
+      if (l.sublessons?.length) return { ...l, sublessons: addLessonAsSublesson(l.sublessons, targetId, toAdd) };
+      return l;
+    });
+
+  // Move lesson to become a top-level lesson in a (possibly different) module
+  const moveLessonToModule = (srcId: string, targetModuleId: string) => {
+    setTrailData(prev => {
+      const { removed, modules: withoutSrc } = removeLessonFromAllModules(prev.modules, srcId);
+      if (!removed) return prev;
+      const addToMod = (mods: Module[]): Module[] =>
+        mods.map(m => {
+          if (m.id === targetModuleId) return { ...m, lessons: [...m.lessons, removed!] };
+          return { ...m, submodules: m.submodules ? addToMod(m.submodules) : m.submodules };
+        });
+      return { ...prev, modules: addToMod(withoutSrc) };
+    });
+    setIsDirty(true);
+    showToast('Etapa movida para o módulo');
+  };
+
+  // Move lesson to become a sublesson of another lesson (cross-module)
+  const moveLessonInto = (srcId: string, targetId: string) => {
+    if (srcId === targetId) return;
+    setTrailData(prev => {
+      const { removed, modules: withoutSrc } = removeLessonFromAllModules(prev.modules, srcId);
+      if (!removed) return prev;
+      const addToTarget = (mods: Module[]): Module[] =>
+        mods.map(m => ({
+          ...m,
+          lessons: addLessonAsSublesson(m.lessons, targetId, removed!),
+          submodules: m.submodules ? addToTarget(m.submodules) : m.submodules,
+        }));
+      return { ...prev, modules: addToTarget(withoutSrc) };
+    });
+    setIsDirty(true);
+    showToast('Etapa movida para dentro de outra');
+  };
+  // ─────────────────────────────────────────────────────────────────────────
 
   const isDescendantModule = (modules: Module[], parentId: string, candidateId: string): boolean => {
     const parent = findModuleById(modules, parentId);
@@ -821,6 +973,26 @@ export default function TrilhaBuilder() {
     return recurse(parent.submodules);
   };
 
+  // Promote all direct submodules of a module to top-level (inserted after the parent)
+  const promoteSubmodules = (moduleId: string) => {
+    setTrailData(prev => {
+      const idx = prev.modules.findIndex(m => m.id === moduleId);
+      if (idx === -1) return prev;
+      const parent = prev.modules[idx];
+      if (!parent.submodules?.length) return prev;
+      const sub = parent.submodules;
+      const updated = [
+        ...prev.modules.slice(0, idx),
+        { ...parent, submodules: [] },
+        ...sub,
+        ...prev.modules.slice(idx + 1),
+      ];
+      return { ...prev, modules: updated };
+    });
+    setIsDirty(true);
+    showToast('Subm\u00f3dulos promovidos para o n\u00edvel superior');
+  };
+
   const renderModule = (module: Module, depth: number, mIndex: number) => {
     return (
       <div key={module.id} className="space-y-1"
@@ -831,13 +1003,26 @@ export default function TrilhaBuilder() {
       >
         <div
           className={cn(
-            "flex items-center justify-between p-2 rounded-md cursor-pointer group transition-all",
-            activeModuleId === module.id ? "bg-slate-50" : "hover:bg-slate-50"
+            "flex items-center justify-between p-2 rounded-md cursor-pointer group transition-all border-l-2",
+            dragLessonOnModuleId === module.id
+              ? "bg-blue-50 border-l-faktory-blue"
+              : activeModuleId === module.id
+                ? "bg-slate-50 border-l-[#99b300]"
+                : "hover:bg-slate-50 border-l-transparent hover:border-l-[#99b300]/50"
           )}
           onClick={() => setActiveModuleId(module.id)}
+          onDragOver={(e) => { if (dragLessonIdRef.current) { e.preventDefault(); e.stopPropagation(); setDragLessonOnModuleId(module.id); } }}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragLessonOnModuleId(null); }}
+          onDrop={(e) => {
+            if (!dragLessonIdRef.current) return;
+            e.preventDefault(); e.stopPropagation();
+            setDragLessonOnModuleId(null);
+            moveLessonToModule(dragLessonIdRef.current, module.id);
+            dragLessonIdRef.current = null;
+          }}
         >
           <div className="flex items-center gap-2 flex-1">
-            <button onClick={(e) => { e.stopPropagation(); toggleModule(module.id); }} aria-expanded={!!expandedModules[module.id]} title={expandedModules[module.id] ? 'Recolher etapa' : 'Expandir etapa'} className="p-1 text-slate-400 hover:text-faktory-blue transition-transform">
+            <button onClick={(e) => { e.stopPropagation(); toggleModule(module.id); }} aria-expanded={!!expandedModules[module.id]} title={expandedModules[module.id] ? 'Recolher módulo' : 'Expandir módulo'} className="p-1 text-slate-400 hover:text-faktory-blue transition-transform">
               <ChevronDown size={14} style={{ transform: expandedModules[module.id] ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform .12s' }} />
             </button>
             <div className="w-1 h-4 bg-slate-200 rounded-full group-hover:bg-faktory-blue transition-all"></div>
@@ -854,35 +1039,44 @@ export default function TrilhaBuilder() {
           <div className="flex items-center gap-2">
             <button
               onClick={(e) => { e.stopPropagation(); addLesson(module.id); }}
-              title="Adicionar aula"
+              title="Adicionar etapa"
               className="text-slate-400 hover:text-faktory-blue p-1 rounded"
             >
               <Plus size={14} />
             </button>
+            {(module.submodules && module.submodules.length > 0) && (
+              <button
+                onClick={(e) => { e.stopPropagation(); promoteSubmodules(module.id); }}
+                title="Soltar subm\u00f3dulos para o n\u00edvel superior"
+                className="text-amber-400 hover:text-amber-600 p-1 rounded text-[10px] font-bold"
+              >
+                &#8593;&#8593;
+              </button>
+            )}
             <button
               onClick={(e) => { e.stopPropagation(); setModuleParentMenuOpenId(prev => prev === module.id ? null : module.id); }}
-              title="Aninhar módulo (mover para dentro de outro)"
+              title="Mover módulo para dentro de outro"
               className="text-slate-400 hover:text-faktory-blue p-1 rounded"
             >
               <Layers size={14} />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); moveModule(module.id, -1); }}
-              title="Mover etapa para cima"
+              title="Mover módulo para cima"
               className="text-slate-400 hover:text-faktory-blue p-1 rounded"
             >
               <ChevronUp size={14} />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); moveModule(module.id, 1); }}
-              title="Mover etapa para baixo"
+              title="Mover módulo para baixo"
               className="text-slate-400 hover:text-faktory-blue p-1 rounded"
             >
               <ChevronDown size={14} />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); removeModule(module.id); }}
-              title="Remover etapa"
+              title="Remover módulo"
               className="text-slate-400 hover:text-red-500 p-1 rounded"
             >
               <Trash2 size={14} />
@@ -906,78 +1100,102 @@ export default function TrilhaBuilder() {
           </div>
         )}
 
-        {expandedModules[module.id] && (
-          <div className="pl-6 space-y-1">
-            {module.lessons.map((lesson, lIndex) => (
-              <div key={lesson.id} className="space-y-1"
-                draggable
-                onDragStart={(e) => { dragLessonIdRef.current = lesson.id; e.dataTransfer.effectAllowed = 'move'; }}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); const dragId = dragLessonIdRef.current; if (dragId && dragId !== lesson.id) reorderLesson(module.id, dragId, lesson.id); dragLessonIdRef.current = null; }}
-              >
-                {/* existing lesson rendering (reuse existing markup) */}
+        {expandedModules[module.id] && (() => {
+          // Recursive lesson renderer
+          const renderLesson = (lesson: Lesson, path: number[], parentId?: string): React.ReactElement => {
+            const lessonDepth = path.length - 1;
+            const label = path.join('.');
+            const isTarget = dragLessonTargetId === lesson.id;
+            const isActive = activeLessonId === lesson.id;
+            const hasChildren = !!(lesson.sublessons?.length);
+            const isExpanded = hasChildren ? (expandedLessons[lesson.id] !== false) : false;
+            return (
+              <div key={lesson.id}>
                 <div
+                  style={{ paddingLeft: `${20 + (depth * 12) + lessonDepth * 16}px` }}
                   className={cn(
-                    "flex items-center justify-between p-2 rounded-md cursor-pointer text-[11px] transition-all",
-                    (activeLessonId === lesson.id && !activeSublessonId) ? "bg-blue-50 text-faktory-blue font-bold" : "text-slate-500 hover:bg-slate-50"
+                    'flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer text-[11px] transition-all border-l-2 group',
+                    isTarget
+                      ? 'bg-blue-50 border-l-faktory-blue'
+                      : isActive
+                        ? 'bg-blue-50 border-l-faktory-blue text-faktory-blue font-bold'
+                        : 'border-l-transparent text-slate-500 hover:bg-slate-50 hover:border-l-slate-300'
                   )}
-                  onClick={() => {
-                    setActiveModuleId(module.id);
-                    setActiveLessonId(lesson.id);
-                    setActiveSublessonId(null);
+                  draggable
+                  onDragStart={(e) => { e.stopPropagation(); dragLessonIdRef.current = lesson.id; e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragEnd={() => { setDragLessonTargetId(null); }}
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragLessonTargetId(lesson.id); }}
+                  onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragLessonTargetId(null); }}
+                  onDrop={(e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    setDragLessonTargetId(null);
+                    const srcId = dragLessonIdRef.current;
+                    if (srcId && srcId !== lesson.id) moveLessonInto(srcId, lesson.id);
+                    dragLessonIdRef.current = null;
                   }}
+                  onClick={() => { setActiveModuleId(module.id); setActiveLessonId(lesson.id); setActiveSublessonId(null); }}
                 >
-                  <div className="flex items-center gap-2 w-full justify-between">
-                    <span className="flex-1" onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(lesson.id, lesson.title); }}>{lesson.title ? lesson.title : '(Sem título)'}</span>
-                    <div className="flex items-center gap-2">
-                      <button onClick={(e) => { e.stopPropagation(); addLesson(module.id, lesson.id); }} title="Adicionar subaula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><Plus size={14} /></button>
-                      <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, lesson.id, -1); }} title="Mover aula para cima" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronUp size={14} /></button>
-                      <button onClick={(e) => { e.stopPropagation(); moveLesson(module.id, lesson.id, 1); }} title="Mover aula para baixo" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={14} /></button>
-                      <button onClick={(e) => { e.stopPropagation(); startEditLesson(lesson.id, lesson.title); }} title="Renomear aula" className="text-slate-400 hover:text-faktory-blue p-1 rounded"><ChevronDown size={14} style={{ transform: 'rotate(-90deg)' }} /></button>
-                      <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, lesson.id); }} title="Remover aula" className="text-slate-300 hover:text-red-500 p-1 rounded"><Trash2 size={14} /></button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* sublessons */}
-                {(lesson.sublessons || []).map((sub, sIndex) => (
-                  <div key={sub.id} className={cn(
-                    "flex items-center justify-between p-1 rounded cursor-pointer text-[11px] transition-all ml-4",
-                    activeSublessonId === sub.id ? "bg-blue-50 text-faktory-blue font-semibold" : "text-slate-400 hover:bg-slate-50"
-                  )} onClick={() => { setActiveModuleId(module.id); setActiveLessonId(lesson.id); setActiveSublessonId(sub.id); }}>
-                    {editingLessonId === sub.id ? (
-                      <div className="flex items-center gap-2 w-full">
+                  <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                    {/* Expand/collapse toggle — same visual pattern as modules */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); if (hasChildren) setExpandedLessons(prev => ({ ...prev, [lesson.id]: !isExpanded })); }}
+                      className={cn('p-0.5 shrink-0 transition-colors', hasChildren ? 'text-slate-400 hover:text-faktory-blue' : 'text-transparent pointer-events-none')}
+                      title={hasChildren ? (isExpanded ? 'Recolher' : 'Expandir') : undefined}
+                    >
+                      <ChevronDown size={12} style={{ transform: hasChildren && isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform .12s' }} />
+                    </button>
+                    <span className="text-[10px] font-bold text-slate-400 shrink-0">{label}.</span>
+                    {editingLessonId === lesson.id ? (
+                      <div className="flex items-center gap-1 flex-1" onClick={(e) => e.stopPropagation()}>
                         <input
                           autoFocus
-                          className="w-full text-sm px-2 py-1 border border-slate-200 rounded"
+                          className="flex-1 text-xs px-1.5 py-0.5 border border-slate-200 rounded"
                           value={editingLessonTitle}
                           onChange={(e) => setEditingLessonTitle(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveEditLesson(); } }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveEditLesson(); } if (e.key === 'Escape') { e.preventDefault(); cancelEditLesson(); } }}
+                          onBlur={() => saveEditLesson()}
                         />
-                        <button onClick={(e) => { e.stopPropagation(); saveEditLesson(); }} className="px-2 py-1 bg-faktory-blue text-white rounded text-xs">Salvar</button>
-                        <button onClick={(e) => { e.stopPropagation(); cancelEditLesson(); }} className="px-2 py-1 border rounded text-xs">Cancelar</button>
+                        <button onClick={(e) => { e.stopPropagation(); saveEditLesson(); }} className="px-1.5 py-0.5 bg-faktory-blue text-white rounded text-[10px]">OK</button>
+                        <button onClick={(e) => { e.stopPropagation(); cancelEditLesson(); }} className="px-1.5 py-0.5 border rounded text-[10px]">✕</button>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2 w-full justify-between">
-                        <span className="flex-1">{sub.title}</span>
-                        <div className="flex items-center gap-2">
-                          <button onClick={(e) => { e.stopPropagation(); startEditLesson(sub.id, sub.title); }} className="text-slate-400 hover:text-faktory-blue p-1 rounded"><Pencil size={14} /></button>
-                          <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, sub.id, lesson.id); }} className="text-slate-300 hover:text-red-500 p-1 rounded"><Trash2 size={14} /></button>
-                        </div>
-                      </div>
+                      <span
+                        className="flex-1 truncate"
+                        onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(lesson.id, lesson.title, parentId); }}
+                        title={lesson.title || '(Sem título)'}
+                      >
+                        {lesson.title || '(Sem título)'}
+                      </span>
                     )}
                   </div>
-                ))}
+                  {editingLessonId !== lesson.id && (
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button onClick={(e) => { e.stopPropagation(); addLesson(module.id, lesson.id); }} title="Adicionar subetapa" className="text-slate-400 hover:text-faktory-blue p-0.5 rounded"><Plus size={12} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); startEditLesson(lesson.id, lesson.title, parentId); }} title="Renomear" className="text-slate-400 hover:text-faktory-blue p-0.5 rounded"><Pencil size={12} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, lesson.id, parentId); }} title="Remover" className="text-slate-300 hover:text-red-500 p-0.5 rounded"><Trash2 size={12} /></button>
+                    </div>
+                  )}
+                </div>
+                {/* drag-into hint */}
+                {isTarget && (
+                  <div style={{ paddingLeft: `${20 + (depth * 12) + lessonDepth * 16 + 14}px` }} className="py-0.5">
+                    <div className="h-1 rounded bg-faktory-blue/40 animate-pulse" />
+                  </div>
+                )}
+                {/* Sublessons recursively — only if expanded */}
+                {hasChildren && isExpanded && (lesson.sublessons || []).map((sub, sIdx) => renderLesson(sub, [...path, sIdx + 1], lesson.id))}
               </div>
-            ))}
-            {/* render nested submodules, if any */}
-            {(module.submodules || []).map((sm, idx) => (
-              <div key={sm.id} className="pl-4">
-                {renderModule(sm, depth+1, idx)}
-              </div>
-            ))}
-          </div>
-        )}
+            );
+          };
+
+          return (
+            <div className="space-y-0.5">
+              {module.lessons.map((lesson, lIdx) => renderLesson(lesson, [lIdx + 1]))}
+              {/* render nested submodules, if any */}
+              {(module.submodules || []).map((sm, idx) => renderModule(sm, depth + 1, idx))}
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -1058,13 +1276,16 @@ export default function TrilhaBuilder() {
   const removeLesson = (moduleId: string, lessonId: string, parentLessonId?: string) => {
     const ok = window.confirm('Remover esta aula? Esta ação não pode ser desfeita.');
     if (!ok) return;
+    const applyToModule = (modules: Module[], fn: (m: Module) => Module): Module[] =>
+      modules.map(m => {
+        if (m.id === moduleId) return fn(m);
+        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, fn) };
+        return m;
+      });
     setTrailData(prev => ({
       ...prev,
-      modules: prev.modules.map(m => {
-        if (m.id !== moduleId) return m;
-        if (!parentLessonId) {
-          return { ...m, lessons: m.lessons.filter(l => l.id !== lessonId) };
-        }
+      modules: applyToModule(prev.modules, m => {
+        if (!parentLessonId) return { ...m, lessons: m.lessons.filter(l => l.id !== lessonId) };
         return { ...m, lessons: m.lessons.map(l => l.id === parentLessonId ? { ...l, sublessons: (l.sublessons || []).filter(s => s.id !== lessonId) } : l) };
       })
     }));
@@ -1093,17 +1314,30 @@ export default function TrilhaBuilder() {
   const saveEditLesson = () => {
     if (!editingLessonId || !activeModuleId) return;
 
+    const applyToModule = (modules: Module[], moduleId: string, fn: (m: Module) => Module): Module[] =>
+      modules.map(m => {
+        if (m.id === moduleId) return fn(m);
+        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, moduleId, fn) };
+        return m;
+      });
+
     // Compute updated trail data with the edited title so we can both update state and persist immediately
     const updated = ((): typeof trailData => {
-      const modules = trailData.modules.map(m => {
-        if (m.id !== activeModuleId) return m;
+      const modules = applyToModule(trailData.modules, activeModuleId, m => {
         if (!editingLessonParentId) {
-          return { ...m, lessons: m.lessons.map(l => l.id === editingLessonId ? { ...l, title: editingLessonTitle } : l) };
+          // Also clear titleHtml so the inline page editor reflects the new sidebar title
+          return { ...m, lessons: m.lessons.map(l => l.id === editingLessonId ? { ...l, title: editingLessonTitle, titleHtml: undefined } as any : l) };
         }
-        return { ...m, lessons: m.lessons.map(l => l.id === editingLessonParentId ? { ...l, sublessons: (l.sublessons || []).map(s => s.id === editingLessonId ? { ...s, title: editingLessonTitle } : s) } : l) };
+        return { ...m, lessons: m.lessons.map(l => l.id === editingLessonParentId ? { ...l, sublessons: (l.sublessons || []).map(s => s.id === editingLessonId ? { ...s, title: editingLessonTitle, titleHtml: undefined } as any : s) } : l) };
       });
       return { ...trailData, modules };
     })();
+
+    // If this is the currently visible lesson, update the inline title DOM directly so the user sees the change
+    if (editingLessonId === activeLessonId) {
+      const el = titleInputRef.current as HTMLDivElement | null;
+      if (el) el.innerHTML = `<h2>${editingLessonTitle}</h2>`;
+    }
 
     setTrailData(updated);
     setIsDirty(true);
@@ -1143,48 +1377,71 @@ export default function TrilhaBuilder() {
   };
 
   const updateLesson = (updates: Partial<Lesson>) => {
-    if (!activeModuleId || !activeLessonId) return;
-    console.debug('[updateLesson] activeModuleId=', activeModuleId, 'activeLessonId=', activeLessonId, 'updates=', updates);
-    // show current lesson content before update
+    if (!activeLessonId) return;
+    console.debug('[updateLesson] activeLessonId=', activeLessonId, 'updates=', updates);
     try {
       console.debug('[updateLesson] before content=', getActiveLesson()?.content);
     } catch (e) { /* noop */ }
-    setTrailData(prev => ({
-      ...prev,
-      modules: prev.modules.map(m => {
-        if (m.id !== activeModuleId) return m;
-        // If a sublesson is active, update that sublesson inside its parent lesson
-        if (activeSublessonId) {
-          return {
-            ...m,
-            lessons: m.lessons.map(l => l.id === activeLessonId ? { ...l, sublessons: (l.sublessons || []).map(s => s.id === activeSublessonId ? { ...s, ...updates } : s) } : l)
-          };
-        }
-        // Otherwise update the top-level lesson
-        return { ...m, lessons: m.lessons.map(l => l.id === activeLessonId ? { ...l, ...updates } : l) };
-      })
-    }));
+
+    const updateLessonInTree = (lessons: Lesson[]): Lesson[] =>
+      lessons.map(l => {
+        if (l.id === activeLessonId) return { ...l, ...updates };
+        if (l.sublessons?.length) return { ...l, sublessons: updateLessonInTree(l.sublessons) };
+        return l;
+      });
+
+    const updateInModules = (modules: Module[]): Module[] =>
+      modules.map(m => ({
+        ...m,
+        lessons: updateLessonInTree(m.lessons),
+        submodules: m.submodules ? updateInModules(m.submodules) : m.submodules,
+      }));
+
+    setTrailData(prev => ({ ...prev, modules: updateInModules(prev.modules) }));
     setIsDirty(true);
-    // log trailData after state update (allow React to flush)
     setTimeout(() => {
       try {
         console.debug('[updateLesson] after update, getActiveLesson().content=', getActiveLesson()?.content);
-        console.debug('[updateLesson] after update, trailData.modules=', trailData.modules.map(m => ({ id: m.id, lessonsCount: m.lessons.length })));
       } catch (e) { /* noop */ }
     }, 200);
   };
 
-  const getActiveLesson = () => {
-    if (!activeModuleId || !activeLessonId) return null;
-    const module = trailData.modules.find(m => m.id === activeModuleId);
-    if (!module) return null;
-    if (activeSublessonId) {
-      for (const l of module.lessons) {
-        const s = (l.sublessons || []).find(x => x.id === activeSublessonId);
-        if (s) return s;
+  const findModuleDeep = (modules: Module[], id: string): Module | undefined => {
+    for (const m of modules) {
+      if (m.id === id) return m;
+      if (m.submodules?.length) {
+        const found = findModuleDeep(m.submodules, id);
+        if (found) return found;
       }
     }
-    return module.lessons.find(l => l.id === activeLessonId) || null;
+    return undefined;
+  };
+
+  const findLessonInTree = (lessons: Lesson[], id: string): Lesson | undefined => {
+    for (const l of lessons) {
+      if (l.id === id) return l;
+      if (l.sublessons?.length) {
+        const found = findLessonInTree(l.sublessons, id);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  };
+
+  const getActiveLesson = () => {
+    if (!activeLessonId) return null;
+    const searchModules = (mods: Module[]): Lesson | null => {
+      for (const m of mods) {
+        const found = findLessonInTree(m.lessons, activeLessonId);
+        if (found) return found;
+        if (m.submodules?.length) {
+          const sub = searchModules(m.submodules);
+          if (sub) return sub;
+        }
+      }
+      return null;
+    };
+    return searchModules(trailData.modules);
   };
 
   const getActiveLessonTitleHtml = () => {
@@ -1579,15 +1836,17 @@ export default function TrilhaBuilder() {
     const blockType = m[2];
     const currentHtml = m[3].trim();
 
-    // For title blocks: extract plain text from the tag
+    // For title blocks: load the full HTML (including heading tag) so the editor is truly WYSIWYG
     if (blockType === 'title') {
-      // extract inner HTML of the heading so we preserve formatting inside
-      const innerMatch = currentHtml.match(/^<([a-z0-9]+)[^>]*>([\s\S]*?)<\/\1>$/i);
-      const innerHtml = innerMatch ? innerMatch[2] : currentHtml;
+      const headingTags = ['h1','h2','h3','h4','h5','h6'];
+      const tagMatch = currentHtml.match(/^<([a-z0-9]+)/i);
+      const htmlForEditor = (tagMatch && headingTags.includes(tagMatch[1].toLowerCase()))
+        ? currentHtml
+        : `<h2>${currentHtml}</h2>`;
       setEditingBlockIdState(id);
       setEditingBlockTypeState(blockType);
-      setEditingBlockHtmlState(innerHtml);
-      initEditorHistory(innerHtml);
+      setEditingBlockHtmlState(htmlForEditor);
+      initEditorHistory(htmlForEditor);
       setUseWysiwygEditor(true);
       setShowBlockEditor(true);
       return;
@@ -1630,10 +1889,8 @@ export default function TrilhaBuilder() {
 
     let newHtml: string;
     if (blockType === 'title') {
-      // wrap plain text back in heading tag, detect original tag
-      const origTagMatch = m[3].trim().match(/^<([a-z0-9]+)/);
-      const tag = origTagMatch ? origTagMatch[1] : 'h2';
-      newHtml = `<${tag}>${editingBlockHtmlState}</${tag}>`;
+      // editor already contains full HTML (e.g. <h2>text</h2>), just sanitize
+      newHtml = DOMPurify.sanitize(currentHtmlToSave, { WHOLE_DOCUMENT: false });
     } else if (blockType === 'video' || blockType === 'embed') {
       // rebuild iframe with new URL
       const embedUrl = getEmbedUrl(editingBlockHtmlState) || editingBlockHtmlState;
@@ -1697,6 +1954,26 @@ export default function TrilhaBuilder() {
     el.style.height = `${Math.max(32, el.scrollHeight)}px`;
   }, [activeLesson?.title, activeLesson?.id]);
 
+  // Populate WYSIWYG editor with block content when the block editor modal opens
+  useEffect(() => {
+    if (!showBlockEditor || !editingBlockIdState) return;
+    // Use rAF so the DOM has rendered the contentEditable div before writing to it
+    const raf = requestAnimationFrame(() => {
+      if (wysiwygRef.current && wysiwygLoadedBlockRef.current !== editingBlockIdState) {
+        wysiwygRef.current.innerHTML = editingBlockHtmlState;
+        wysiwygLoadedBlockRef.current = editingBlockIdState;
+        // Move cursor to end
+        const range = document.createRange();
+        range.selectNodeContents(wysiwygRef.current);
+        range.collapse(false);
+        const sel = window.getSelection();
+        if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showBlockEditor, editingBlockIdState]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -1755,12 +2032,27 @@ export default function TrilhaBuilder() {
             ) : null}
           </div>
 
+          {hasLocalBackup && (
+            <button
+              onClick={restoreLocalBackup}
+              className="px-3 py-1.5 text-[10px] font-bold text-white bg-amber-500 hover:bg-amber-600 border border-amber-500 rounded transition-all flex items-center gap-2 animate-pulse"
+            >
+              ⚠ Restaurar backup local
+            </button>
+          )}
           <button 
             onClick={applyFaktoryOneTemplate}
             className="px-3 py-1.5 text-[10px] font-bold text-faktory-blue border border-faktory-blue rounded hover:bg-blue-50 transition-all flex items-center gap-2"
           >
             <Layers size={14} />
             Template Faktory One
+          </button>
+          <button
+            onClick={flattenUntitledModules}
+            className="px-3 py-1.5 text-[10px] font-bold text-slate-600 border border-slate-200 rounded hover:bg-slate-50 transition-all"
+            title="Promover subetapas de módulos sem título para o nível superior"
+          >
+            Soltar subetapas
           </button>
           {/* Actions menu (Visualizar / Editar / Excluir) */}
           <div className="relative" ref={actionsMenuRef}>
@@ -1810,7 +2102,7 @@ export default function TrilhaBuilder() {
               className="w-full py-2 bg-[#99b300] hover:bg-[#88a000] text-white rounded font-bold text-xs flex items-center justify-center gap-2 transition-all"
             >
               <Plus size={16} />
-              Adicionar etapa
+              Adicionar módulo
             </button>
           </div>
 
@@ -1818,7 +2110,7 @@ export default function TrilhaBuilder() {
             {trailData.modules.length === 0 ? (
                 <div className="p-4 bg-yellow-50 border border-yellow-100 rounded text-sm text-slate-700">
                   <div className="font-bold mb-2">Nenhuma etapa encontrada</div>
-                  <div className="text-[13px] mb-3">Use o botão "Adicionar etapa" acima para criar uma nova etapa.</div>
+                  <div className="text-[13px] mb-3">Use o botão "Adicionar módulo" acima para criar um novo módulo.</div>
                 </div>
             ) : (
             trailData.modules.map((module, mIndex) => renderModule(module, 0, mIndex))
@@ -2063,12 +2355,11 @@ export default function TrilhaBuilder() {
                         updateLesson({ title: text, titleHtml: html } as any);
                       }}
                       onMouseDown={(e) => e.stopPropagation()}
-                      dangerouslySetInnerHTML={{ __html: getActiveLessonTitleHtml() }}
                     />
                   </div>
                 </div>
               ) : (
-                <div className="text-slate-300 italic">Selecione ou crie uma aula para começar</div>
+                <div className="text-slate-300 italic">Selecione ou crie uma etapa para começar</div>
               )}
             </div>
 
@@ -2803,22 +3094,31 @@ export default function TrilhaBuilder() {
                   <>
                     <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Texto do título</div>
                     <div className="border border-slate-200 rounded-lg overflow-hidden">
-                      <div className="flex items-center gap-1 px-2 py-1.5 bg-slate-50 border-b border-slate-200" onMouseDown={(e) => { e.preventDefault(); }}>
-                        <button type="button" title="Negrito" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('bold')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">B</button>
+                      <div className="flex items-center gap-1 px-2 py-1.5 bg-slate-50 border-b border-slate-200" onMouseDown={(e) => { if ((e.target as HTMLElement).tagName === 'BUTTON') e.preventDefault(); }}>
+                        <button type="button" title="Negrito" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('bold')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white font-bold">B</button>
                         <button type="button" title="Itálico" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('italic')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white italic">I</button>
-                        <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="inherit" onChange={(e) => execCommand('fontName', e.target.value)}>
+                        <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="inherit"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onChange={(e) => { restoreEditorSelection(); execCommand('fontName', e.target.value); }}>
                           <option value="inherit">Fonte</option>
                           <option value="Arial">Arial</option>
                           <option value="Georgia">Georgia</option>
                           <option value="Times New Roman">Times New Roman</option>
                         </select>
-                        <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="3" onChange={(e) => execCommand('fontSize', e.target.value)}>
-                          <option value="3">12px</option>
-                          <option value="4">14px</option>
-                          <option value="5">18px</option>
-                          <option value="6">24px</option>
+                        <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="3"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onChange={(e) => { restoreEditorSelection(); execCommand('fontSize', e.target.value); }}>
+                          <option value="1">10px</option>
+                          <option value="2">12px</option>
+                          <option value="3">14px</option>
+                          <option value="4">18px</option>
+                          <option value="5">24px</option>
+                          <option value="6">32px</option>
+                          <option value="7">48px</option>
                         </select>
-                        <input type="color" className="w-8 h-8 p-0 border rounded" onChange={(e) => execCommand('foreColor', e.target.value)} title="Cor da fonte" />
+                        <input type="color" className="w-8 h-8 p-0 border rounded cursor-pointer" title="Cor da fonte"
+                          onMouseDown={(e) => { saveEditorSelection(); e.stopPropagation(); }}
+                          onChange={(e) => { restoreEditorSelection(); execCommand('foreColor', e.target.value); }} />
                         <div className="w-px h-5 bg-slate-200 mx-1" />
                         <button type="button" title="Alinhar esquerda" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyLeft')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">L</button>
                         <button type="button" title="Centralizar" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyCenter')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">C</button>
@@ -2832,7 +3132,7 @@ export default function TrilhaBuilder() {
                         onMouseUp={() => saveEditorSelection()}
                         onKeyUp={() => saveEditorSelection()}
                         onInput={(e) => { handleWysiwygInput((e.currentTarget as HTMLDivElement).innerHTML); saveEditorSelection(); }}
-                        className="w-full p-4 text-2xl font-bold text-slate-700 outline-none bg-white"
+                        className="w-full p-4 text-slate-700 outline-none bg-white rich-text-editor"
                         style={{ minHeight: 120 }}
                         dir="ltr"
                       />
