@@ -29,40 +29,69 @@ export interface Quiz {
   correctIndex: number;
 }
 
-export interface Lesson {
+// ── Novo modelo (pós-migração backend) ──────────────────────────────────────
+
+export interface Component {
   id: string;
-  title: string;
-  videoUrl: string;
-  content: string;
-  questionnaireId?: string;
+  type: 'text' | 'image' | 'video' | 'iframe' | 'quiz' | 'logo';
+  payload: Record<string, any>;
+  order?: number;
+}
+
+export interface Subetapa {
+  id: string;
+  title?: string;
+  components?: Component[];
   imageUrl?: string;
-  imageOptions?: { size?: 'small' | 'medium' | 'full' };
-  quiz?: Quiz;
-  videoOptions?: {
-    subtitlesUrl?: string;
-    autoplay?: boolean;
-    loop?: boolean;
-    controls?: boolean;
-  };
-  // position of the lesson video relative to the content/title
-  videoPosition?: 'title-top' | 'top' | 'bottom';
-  sublessons?: Lesson[];
+}
+
+export interface Etapa {
+  id: string;
+  title?: string;
+  components?: Component[];
+  subetapas?: Subetapa[];
+  imageUrl?: string;
 }
 
 export interface Module {
   id: string;
   title: string;
-  lessons: Lesson[];
+  description?: string;
+  etapas?: Etapa[];
   submodules?: Module[];
 }
 
 export interface Trail {
   id: string;
   title: string;
-  description: string;
-  isPublic?: boolean;
+  description?: string;
+  durationMonths?: number;
+  moduleCount?: number;
   modules: Module[];
 }
+
+// ── Alias legado (será removido após migração completa do JSX) ──
+/** @deprecated Use Etapa */
+export type Lesson = Etapa & {
+  /** @deprecated Use components[] com type='text' */
+  content?: string;
+  /** @deprecated Use components[] com type='video' */
+  videoUrl?: string;
+  videoPosition?: 'title-top' | 'top' | 'bottom';
+  videoOptions?: {
+    subtitlesUrl?: string;
+    autoplay?: boolean;
+    loop?: boolean;
+    controls?: boolean;
+  };
+  questionnaireId?: string;
+  imageOptions?: { size?: 'small' | 'medium' | 'full' };
+  quiz?: Quiz;
+  /** @deprecated Use Etapa.subetapas */
+  sublessons?: Lesson[];
+  /** @deprecated mapped from Etapa.subetapas */
+  lessons?: Lesson[];
+};
 
 /** Shape retornado por GET /api/trails (listagem — sem módulos/aulas). */
 export interface TrailSummary {

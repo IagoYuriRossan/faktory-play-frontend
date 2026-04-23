@@ -1,6 +1,6 @@
 import { Company, Trail, User, Enrollment } from '../@types';
 
-export const MOCK_TRAILS: Trail[] = [
+export const MOCK_TRAILS: any[] = [
   {
     id: 'faktory-one',
     title: 'Faktory One',
@@ -10,7 +10,7 @@ export const MOCK_TRAILS: Trail[] = [
       {
         id: 'e1',
         title: 'Etapa 1 - Boas-vindas e Instruções Iniciais',
-        lessons: [
+        etapas: [
           {
             id: 'l1-1',
             title: 'Bem-vindo ao Evolutto - Sua Jornada Começa Aqui',
@@ -60,7 +60,7 @@ export const MOCK_TRAILS: Trail[] = [
       {
         id: 'e2',
         title: 'Etapa 2 - Usabilidade',
-        lessons: [
+        etapas: [
           {
             id: 'l2-1',
             title: 'Navegação e Atalhos',
@@ -72,7 +72,7 @@ export const MOCK_TRAILS: Trail[] = [
       {
         id: 'e3',
         title: 'Etapa 3 - Administração do Sistema',
-        lessons: [
+        etapas: [
           {
             id: 'l3-1',
             title: 'Configurações Globais',
@@ -84,7 +84,7 @@ export const MOCK_TRAILS: Trail[] = [
       {
         id: 'e4',
         title: 'Etapa 4 - Cadastros',
-        lessons: [
+        etapas: [
           {
             id: 'l4-1',
             title: 'Cadastro de Produtos e Clientes',
@@ -96,7 +96,7 @@ export const MOCK_TRAILS: Trail[] = [
       {
         id: 'e5',
         title: 'Etapa 5 - Consultas e Relatórios',
-        lessons: [
+        etapas: [
           {
             id: 'l5-1',
             title: 'Extraindo Dados',
@@ -108,7 +108,7 @@ export const MOCK_TRAILS: Trail[] = [
       {
         id: 'e6',
         title: 'Etapa 6 - Finalização da trilha',
-        lessons: [
+        etapas: [
           {
             id: 'l6-1',
             title: 'Conclusão e Próximos Passos',
@@ -127,7 +127,7 @@ export const MOCK_TRAILS: Trail[] = [
       {
         id: 'm2',
         title: 'Módulo de Vendas',
-        lessons: [
+        etapas: [
           {
             id: 'l2',
             title: 'Emissão de NF-e',
@@ -152,7 +152,7 @@ export const MOCK_TRAILS: Trail[] = [
       {
         id: 'm3',
         title: 'BI e Relatórios Avançados',
-        lessons: [
+        etapas: [
           {
             id: 'l3',
             title: 'Configurando Dashboards de Gestão',
