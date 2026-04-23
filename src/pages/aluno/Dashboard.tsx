@@ -6,7 +6,6 @@ import { BookOpen, Clock, ChevronRight, Loader2 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { cn } from '../../utils/utils';
 
-import { MOCK_TRAILS } from '../../mocks/data';
 
 export default function AlunoDashboard() {
   const navigate = useNavigate();
