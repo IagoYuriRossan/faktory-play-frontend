@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { 
-  Plus, Trash2, Video, FileText, HelpCircle, 
+import {
+  Plus, Trash2, Video, FileText, HelpCircle,
   ChevronDown, ChevronUp, Save, Loader2, ArrowLeft,
   Layout, Image as ImageIcon, Type, Code, Layers,
   Eye, Search, Bell, User as UserIcon, Minus, Maximize2,
@@ -9,187 +8,25 @@ import {
   GripVertical, Copy, Pencil, Undo2, Redo2
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { api } from '../../utils/api';
 import { auth } from '../../utils/firebase';
 import { cn } from '../../utils/utils';
 import { Trail, Module, Lesson } from '../../@types/index';
 import DOMPurify from 'dompurify';
+import { useWysiwygEditor } from './TrilhaBuilder/hooks/useWysiwygEditor';
+import { useTrailData } from './TrilhaBuilder/hooks/useTrailData';
+import { useModuleTree } from './TrilhaBuilder/hooks/useModuleTree';
+import { useEtapaTree } from './TrilhaBuilder/hooks/useEtapaTree';
+import { useBlockEditor } from './TrilhaBuilder/hooks/useBlockEditor';
+import { trilhaBuilderApi } from './TrilhaBuilder/services/trilhaBuilderApi';
+import { ContentArea } from './TrilhaBuilder/components/ContentArea';
+import { createLogoContent, genBlock, genId, getEmbedUrl, parseBlocks } from './TrilhaBuilder/utils/contentBlocks';
 
 export default function TrilhaBuilder() {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
-  const trailId = id || '';
-
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [isDirty, setIsDirty] = useState(false);
-  const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
-  const [activeLessonId, setActiveLessonId] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  // ── UI-only state (not extracted to hooks) ──
   const [showBlockEditor, setShowBlockEditor] = useState(false);
-  const [useWysiwygEditor, setUseWysiwygEditor] = useState(true);
-  const [editingBlockHtmlState, setEditingBlockHtmlState] = useState('');
-  const [editingBlockIdState, setEditingBlockIdState] = useState<string | null>(null);
-  const [editingBlockTypeState, setEditingBlockTypeState] = useState('');
   const [titleHovered, setTitleHovered] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const [showVideoModal, setShowVideoModal] = useState(false);
-
-  const editorHistoryRef = useRef<{ past: string[]; future: string[] }>({ past: [], future: [] });
-  const editorHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const editorSelectionRef = useRef<Range | null>(null);
-  const wysiwygRef = useRef<HTMLDivElement | null>(null);
-  const editorLiveHtmlRef = useRef<string>('');
-  const wysiwygLoadedBlockRef = useRef<string | null>(null);
-  const toastTimerRef = useRef<number | null>(null);
-
-  const pushEditorHistory = (html: string) => {
-    editorHistoryRef.current.past.push(html);
-    editorHistoryRef.current.future = [];
-  };
-
-  const initEditorHistory = (html: string) => {
-    editorHistoryRef.current = { past: [], future: [] };
-    editorLiveHtmlRef.current = html;
-  };
-
-  const flushEditorHistory = () => {
-    if (editorHistoryTimerRef.current) {
-      window.clearTimeout(editorHistoryTimerRef.current);
-      editorHistoryTimerRef.current = null;
-    }
-    pushEditorHistory(editorLiveHtmlRef.current);
-  };
-
-  const canUndoEditor = () => editorHistoryRef.current.past.length > 0;
-  const canRedoEditor = () => editorHistoryRef.current.future.length > 0;
-
-  const handleEditorValueChange = (value: string) => {
-    editorLiveHtmlRef.current = value;
-    setEditingBlockHtmlState(value);
-    pushEditorHistory(value);
-  };
-
-  const handleUndoEditor = () => {
-    if (editorHistoryRef.current.past.length === 0) return;
-    const current = editorLiveHtmlRef.current;
-    editorHistoryRef.current.future.push(current);
-    const prev = editorHistoryRef.current.past.pop()!;
-    editorLiveHtmlRef.current = prev;
-    setEditingBlockHtmlState(prev);
-    if (wysiwygRef.current) wysiwygRef.current.innerHTML = prev;
-  };
-
-  const handleRedoEditor = () => {
-    if (editorHistoryRef.current.future.length === 0) return;
-    const current = editorLiveHtmlRef.current;
-    editorHistoryRef.current.past.push(current);
-    const next = editorHistoryRef.current.future.pop()!;
-    editorLiveHtmlRef.current = next;
-    setEditingBlockHtmlState(next);
-    if (wysiwygRef.current) wysiwygRef.current.innerHTML = next;
-  };
-
-  const saveEditorSelection = () => {
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    editorSelectionRef.current = sel.getRangeAt(0).cloneRange();
-  };
-
-  const restoreEditorSelection = () => {
-    if (!editorSelectionRef.current) return;
-    const sel = window.getSelection();
-    if (!sel) return;
-    try {
-      sel.removeAllRanges();
-      sel.addRange(editorSelectionRef.current);
-    } catch (_) { /* stale range */ }
-  };
-
-  const handleWysiwygInput = (html: string) => {
-    editorLiveHtmlRef.current = html;
-    setEditingBlockHtmlState(html);
-    if (editorHistoryTimerRef.current) window.clearTimeout(editorHistoryTimerRef.current);
-    editorHistoryTimerRef.current = setTimeout(() => { pushEditorHistory(html); }, 300);
-  };
-
-  useEffect(() => {
-    if (!showBlockEditor) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      const key = e.key.toLowerCase();
-      if (key === 'z' && e.shiftKey) {
-        e.preventDefault();
-        handleRedoEditor();
-        return;
-      }
-      if (key === 'z') {
-        e.preventDefault();
-        handleUndoEditor();
-        return;
-      }
-      if (key === 'y') {
-        e.preventDefault();
-        handleRedoEditor();
-      }
-    };
-
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [showBlockEditor, useWysiwygEditor]);
-
-  useEffect(() => {
-    return () => {
-      if (editorHistoryTimerRef.current) {
-        window.clearTimeout(editorHistoryTimerRef.current);
-      }
-    };
-  }, []);
-
-  const execCommand = (cmd: string, value?: string) => {
-    const editor = wysiwygRef.current;
-    if (!editor) return;
-
-    let sel = window.getSelection();
-    if (!sel) return;
-
-    // Ensure editor is focused
-    if (document.activeElement !== editor && !editor.contains(document.activeElement)) {
-      editor.focus();
-    }
-
-    // Restore the last user cursor/selection from the editor to avoid formatting the wrong line
-    restoreEditorSelection();
-    sel = window.getSelection();
-    if (!sel) return;
-
-    // Ensure we have a selection range inside the editor
-    if (sel.rangeCount === 0 || !editor.contains(sel.anchorNode)) {
-      const range = document.createRange();
-      range.selectNodeContents(editor);
-      range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-
-    // ── LIST COMMANDS: use native browser behavior to respect caret/selection ──
-    if (cmd === 'insertUnorderedList' || cmd === 'insertOrderedList') {
-      try { document.execCommand(cmd, false, ''); } catch (_) { /* noop */ }
-      const html = editor.innerHTML;
-      editorLiveHtmlRef.current = html;
-      setEditingBlockHtmlState(html);
-      pushEditorHistory(html);
-      saveEditorSelection();
-      return;
-    }
-
-    // ── OTHER COMMANDS: use native execCommand ──
-    try {
-      document.execCommand(cmd, false, value ?? '');
-      saveEditorSelection();
-    } catch (_) { /* noop */ }
-  };
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [imageUploading, setImageUploading] = useState(false);
@@ -197,669 +34,114 @@ export default function TrilhaBuilder() {
   const [editingLessonId, setEditingLessonId] = useState<string | null>(null);
   const [editingLessonTitle, setEditingLessonTitle] = useState('');
   const [editingLessonParentId, setEditingLessonParentId] = useState<string | null>(null);
-  const [activeSublessonId, setActiveSublessonId] = useState<string | null>(null);
   const [dragLessonTargetId, setDragLessonTargetId] = useState<string | null>(null);
   const [dragLessonOnModuleId, setDragLessonOnModuleId] = useState<string | null>(null);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
-  const [expandedModules, setExpandedModules] = useState<Record<string, boolean>>({});
-  const [expandedLessons, setExpandedLessons] = useState<Record<string, boolean>>({});
-  
-  const [trailData, setTrailData] = useState({
-    title: '',
-    description: '',
-    modules: [] as Module[]
+
+  // ── Extracted hooks ──
+  const trail = useTrailData();
+  const {
+    id, trailId, navigate,
+    loading, saving, setSaving,
+    isDirty, setIsDirty, lastSaved, setLastSaved,
+    activeModuleId, setActiveModuleId,
+    activeLessonId, setActiveLessonId,
+    hasLocalBackup,
+    expandedModules, setExpandedModules,
+    expandedLessons, setExpandedLessons,
+    trailData, setTrailData,
+    toast, showToast,
+    restoreLocalBackup,
+    handleSave, handleRefreshFromServer, handleDeleteTrail,
+  } = trail;
+
+  const wysiwyg = useWysiwygEditor(showBlockEditor);
+  const {
+    useWysiwygMode, setUseWysiwygMode,
+    editingBlockHtml, setEditingBlockHtml,
+    editingBlockId, setEditingBlockId,
+    editingBlockType, setEditingBlockType,
+    editingBlockPayload, setEditingBlockPayload,
+    wysiwygRef, wysiwygLoadedBlockRef,
+    initEditorHistory, flushEditorHistory,
+    canUndo, canRedo,
+    handleEditorValueChange, handleUndo, handleRedo,
+    saveSelection, restoreSelection, handleWysiwygInput, execCommand,
+  } = wysiwyg;
+
+  const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const moduleTree = useModuleTree({
+    id, trailId, navigate, trailData, setTrailData, setIsDirty,
+    activeModuleId, setActiveModuleId, setActiveLessonId,
+    setExpandedModules, showToast, setSaving, setLastSaved,
   });
+  const {
+    reorderModule, moveModuleInto, toggleModule,
+    addModule, updateModuleTitle, removeModule, moveModule,
+    promoteSubmodules, applyFaktoryOneTemplate, flattenUntitledModules,
+  } = moduleTree;
 
-  // ── localStorage backup key ──────────────────────────────────────────────
-  const localKey = `trail-backup-${trailId}`;
+  const etapaTree = useEtapaTree({
+    id, trailId, trailData, setTrailData, setIsDirty,
+    activeModuleId, setActiveModuleId,
+    activeLessonId, setActiveLessonId,
+    showToast, setSaving, setLastSaved,
+    setEditingLessonId, setEditingLessonTitle, setEditingLessonParentId,
+    titleInputRef,
+  });
+  const {
+    addLesson, removeLesson, moveLesson,
+    moveLessonToModule, moveLessonInto,
+    startEditLesson, updateLesson,
+    getActiveLesson, getActiveLessonTitleHtml,
+  } = etapaTree;
 
-  // Persist every change to localStorage so data survives CORS/network failures
-  useEffect(() => {
-    if (!trailData.modules.length) return;
-    try {
-      localStorage.setItem(localKey, JSON.stringify({ savedAt: Date.now(), data: trailData }));
-    } catch (_) { /* storage full or unavailable */ }
-  }, [trailData]);
+  // ── Block editor hook ──
+  const blockEditor = useBlockEditor({
+    activeLesson: getActiveLesson(),
+    updateLesson,
+    showToast,
+    wysiwyg,
+    setShowBlockEditor,
+  });
+  const {
+    moveBlockById, reorderBlock, reorderBlockTo,
+    duplicateBlockById, removeBlockById,
+    editBlockById, saveEditedBlock, cancelEditBlock, addBlock,
+  } = blockEditor;
 
-  const [hasLocalBackup, setHasLocalBackup] = useState(false);
-
-  const restoreLocalBackup = () => {
-    try {
-      const raw = localStorage.getItem(localKey);
-      if (!raw) return;
-      const { data } = JSON.parse(raw);
-      setTrailData(data);
-      setIsDirty(true);
-      showToast('Dados restaurados do backup local');
-      setHasLocalBackup(false);
-    } catch (_) { showToast('Erro ao restaurar backup local'); }
-  };
-
-  // Auto-save logic
-  useEffect(() => {
-    if (!isDirty) return;
-
-    const timeoutId = setTimeout(async () => {
-      try {
-        const finalData = { id: trailId, ...trailData };
-        if (id) {
-          await api.put(`/api/trails/${trailId}`, finalData);
-        } else {
-          const res = await api.post<any>('/api/trails', finalData);
-          const returnedId = res?.id || trailId;
-          navigate(`/admin/trilhas/${returnedId}`, { replace: true });
-        }
-        setLastSaved(new Date());
-        setIsDirty(false);
-      } catch (error) {
-        console.error('Auto-save failed:', error);
-        showToast('Auto-save falhou — verifique conexão e autenticação');
-      }
-    }, 2000);
-
-    return () => clearTimeout(timeoutId);
-  }, [trailData, isDirty, id, trailId, navigate]);
-
-  useEffect(() => {
-    async function fetchTrail() {
-      if (!id) return;
-      try {
-        const data = await api.get<Trail>(`/api/trails/${id}`);
-        setTrailData({
-          title: data.title,
-          description: data.description,
-          modules: data.modules,
-        });
-
-        // Check if backend data appears empty (all modules/lessons have no titles) while a local backup exists
-        const allEmpty = data.modules.length > 0 && data.modules.every(m => !m.title && m.lessons.every(l => !l.title));
-        const backupRaw = localStorage.getItem(`trail-backup-${id}`);
-        if (allEmpty && backupRaw) {
-          try {
-            const { data: backupData } = JSON.parse(backupRaw);
-            const backupHasTitles = backupData?.modules?.some((m: Module) => !!m.title);
-            if (backupHasTitles) setHasLocalBackup(true);
-          } catch (_) { /* noop */ }
-        }
-        // Encontra o primeiro módulo (em qualquer nível) que tenha pelo menos uma aula
-        const findFirstModuleWithLesson = (modules: Module[]): { moduleId: string; lessonId: string } | null => {
-          for (const m of modules) {
-            if (m.lessons.length > 0) return { moduleId: m.id, lessonId: m.lessons[0].id };
-            if (m.submodules?.length) {
-              const found = findFirstModuleWithLesson(m.submodules);
-              if (found) return found;
-            }
-          }
-          return null;
-        };
-
-        const first = findFirstModuleWithLesson(data.modules);
-        if (first) {
-          setActiveModuleId(first.moduleId);
-          setActiveLessonId(first.lessonId);
-        }
-
-        // Expande todos os módulos e submodules recursivamente
-        const collectExpanded = (modules: Module[], acc: Record<string, boolean>) => {
-          modules.forEach(m => {
-            if (acc[m.id] === undefined) acc[m.id] = true;
-            if (m.submodules?.length) collectExpanded(m.submodules, acc);
-          });
-        };
-        setExpandedModules(prev => {
-          const next = { ...prev };
-          collectExpanded(data.modules, next);
-          return next;
-        });
-      } catch (error) {
-        console.error('Error fetching trail:', error);
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchTrail();
-  }, [id]);
-
-  // helper to create block-wrapped content so prefilled items get the same controls
-  const makeBlock = (html: string, type = 'custom') => {
-    const id = `b-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    const safe = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false });
-    return `<!-- block:${type}:${id} -->\n${safe}\n<!-- /block:${type}:${id} -->`;
-  };
-
-  const welcomeContent = makeBlock('<p>Bem-vindo à primeira aula.</p>');
-
-  const createLogoContent = () => {
-    const logoHtml = `<div class="faktory-logo"><img src="/logo.png" alt="Faktory Logo" style="max-width:320px;"/></div>`;
-    const logoBlockId = `b-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    return `<!-- block:logo:${logoBlockId} -->\n${DOMPurify.sanitize(logoHtml, { WHOLE_DOCUMENT: false })}\n<!-- /block:logo:${logoBlockId} -->`;
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const finalData: Trail = { id: trailId, ...trailData };
-      if (id) {
-        try {
-          await api.put(`/api/trails/${trailId}`, finalData);
-        } catch (err: any) {
-          // If backend responds that document doesn't exist, try creating it (fallback)
-          if (err && err.status === 404) {
-            const res = await api.post<any>('/api/trails', finalData);
-            const returnedId = res?.id || trailId;
-            navigate(`/admin/trilhas/${returnedId}`, { replace: true });
-          } else {
-            throw err;
-          }
-        }
-      } else {
-        const res = await api.post<any>('/api/trails', finalData);
-        const returnedId = res?.id || trailId;
-        navigate(`/admin/trilhas/${returnedId}`, { replace: true });
-      }
-      setLastSaved(new Date());
-      setIsDirty(false);
-      showToast('Trilha salva');
-    } catch (error) {
-      console.error('Error saving trail:', error);
-      showToast('Erro ao salvar trilha — verifique conexão e autenticação');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const testSaveAndReload = async () => {
-    setSaving(true);
-    try {
-      const finalData: Trail = { id: trailId, ...trailData };
-      console.debug('[TEST] enviando PUT /api/trails', finalData);
-      if (id) {
-        const resp = await api.put(`/api/trails/${trailId}`, finalData);
-        console.debug('[TEST] PUT response:', resp);
-      } else {
-        const res = await api.post<any>('/api/trails', finalData);
-        console.debug('[TEST] POST response:', res);
-      }
-      // imediatamente buscar do servidor
-      const fetched = await api.get<Trail>(`/api/trails/${trailId}`);
-      console.debug('[TEST] GET after save:', fetched);
-      showToast('Teste concluído — verifique console para detalhes');
-    } catch (err) {
-      console.error('[TEST] Erro no teste de salvar+recarregar:', err);
-      showToast('Teste falhou — veja console');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const reorderModule = (dragId: string, dropId: string) => {
-    // Note: reordering supports only top-level modules in this implementation
-    setTrailData(prev => {
-      const modules = [...prev.modules];
-      const fromIdx = modules.findIndex(m => m.id === dragId);
-      const toIdx = modules.findIndex(m => m.id === dropId);
-      if (fromIdx === -1 || toIdx === -1) return prev;
-      const [item] = modules.splice(fromIdx, 1);
-      modules.splice(toIdx, 0, item);
-      return { ...prev, modules };
-    });
-    setIsDirty(true);
-  };
-
-  // Helpers to move modules between levels (convert module into submodule of parent)
-  const findAndRemoveModule = (modules: Module[], id: string) : { removed?: Module; modules: Module[] } => {
-    for (let i = 0; i < modules.length; i++) {
-      const m = modules[i];
-      if (m.id === id) {
-        const copy = [...modules];
-        const [removed] = copy.splice(i,1);
-        return { removed, modules: copy };
-      }
-      if (m.submodules && m.submodules.length) {
-        const res = findAndRemoveModule(m.submodules, id);
-        if (res.removed) {
-          const copy = modules.map(x => x.id === m.id ? { ...m, submodules: res.modules } : x);
-          return { removed: res.removed, modules: copy };
-        }
-      }
-    }
-    return { modules };
-  };
-
-  const findModuleById = (modules: Module[], id: string) : Module | undefined => {
-    for (const m of modules) {
-      if (m.id === id) return m;
-      if (m.submodules) {
-        const found = findModuleById(m.submodules, id);
-        if (found) return found;
-      }
-    }
-    return undefined;
-  };
-
-  const moveModuleInto = (moduleId: string, parentId: string) => {
-    if (moduleId === parentId) return;
-    setTrailData(prev => {
-      // remove module from wherever it is
-      const cloned = JSON.parse(JSON.stringify(prev.modules)) as Module[];
-      const { removed, modules: without } = findAndRemoveModule(cloned, moduleId);
-      if (!removed) return prev;
-      // find parent in resulting tree
-      const parent = findModuleById(without, parentId);
-      if (!parent) {
-        // If parent not found at nested level, try top-level
-        const topIdx = without.findIndex(m => m.id === parentId);
-        if (topIdx !== -1) {
-          const copy = [...without];
-          copy[topIdx].submodules = [...(copy[topIdx].submodules || []), removed];
-          return { ...prev, modules: copy };
-        }
-        return prev;
-      }
-      // attach as submodule
-      const attach = (ms: Module[]): Module[] => ms.map(x => {
-        if (x.id === parent.id) return { ...x, submodules: [...(x.submodules || []), removed] };
-        return { ...x, submodules: x.submodules ? attach(x.submodules) : x.submodules };
-      });
-      return { ...prev, modules: attach(without) };
-    });
-    setIsDirty(true);
-    showToast('Módulo movido para dentro do módulo selecionado');
-  };
-
-  const reorderLesson = (moduleId: string, dragId: string, dropId: string) => {
-    setTrailData(prev => {
-      const modules = prev.modules.map(m => {
-        if (m.id !== moduleId) return m;
-        const lessons = [...m.lessons];
-        const fromIdx = lessons.findIndex(l => l.id === dragId);
-        const toIdx = lessons.findIndex(l => l.id === dropId);
-        if (fromIdx === -1 || toIdx === -1) return m;
-        const [item] = lessons.splice(fromIdx, 1);
-        lessons.splice(toIdx, 0, item);
-        return { ...m, lessons };
-      });
-      return { ...prev, modules };
-    });
-    setIsDirty(true);
-  };
-
-  const toggleModule = (moduleId: string) => {
-    setExpandedModules(prev => ({ ...prev, [moduleId]: !prev[moduleId] }));
-  };
-
-  const handleRefreshFromServer = async () => {
-    if (isDirty) {
-      const ok = window.confirm('Existem alterações não salvas. Deseja descartar e recarregar do servidor?');
-      if (!ok) return;
-    }
-    if (!id) return;
-    setLoading(true);
-    try {
-      const data = await api.get<Trail>(`/api/trails/${id}`);
-      setTrailData({ title: data.title, description: data.description, modules: data.modules });
-      setIsDirty(false);
-      setShowPreviewModal(false);
-      showToast('Recarregado do servidor');
-    } catch (err) {
-      showToast('Erro ao recarregar do servidor');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleOpenPreview = () => {
-    setShowPreviewModal(true);
-  };
-
-  const handleDeleteTrail = async () => {
-    if (!id) return;
-    // Optimistic UX: navigate immediately so the user sees the list fast,
-    // then perform deletion in background. If deletion fails, notify the user.
-    navigate('/admin/trilhas');
-    showToast('Removendo trilha...');
-    (async () => {
-      try {
-        await api.delete(`/api/trails/${id}`);
-        // Success — inform user (list already shows navigated view)
-        showToast('Trilha removida');
-      } catch (err) {
-        console.error('Erro ao remover trilha (background):', err);
-        showToast('Erro ao remover trilha — verifique a conexão');
-      }
-    })();
-  };
-
-  useEffect(() => {
-    function onDocClick(e: MouseEvent) {
-      if (!showActionsMenu) return;
-      if (!actionsMenuRef.current) return;
-      const el = actionsMenuRef.current;
-      if (!el.contains(e.target as Node)) setShowActionsMenu(false);
-    }
-
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setShowActionsMenu(false);
-    }
-
-    document.addEventListener('mousedown', onDocClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDocClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [showActionsMenu]);
-
-  const applyFaktoryOneTemplate = () => {
-    const stages = [
-      '1. Boas vindas',
-      '2. Novos usuários CEM',
-      '3. Novos usuários Pref',
-      '4. Vendas',
-      '5. Faturamento',
-      '6. Financeiro'
-    ];
-    
-
-    const newModules: Module[] = stages.map((title, index) => ({
-      id: `m-${Date.now()}-${index}`,
-      title,
-      lessons: [
-        {
-          id: `l-${Date.now()}-${index}-1`,
-          title: '',
-          videoUrl: '',
-          videoPosition: 'top',
-          content: '',
-        }
-      ]
-    }));
-
-    setTrailData(prev => ({
-      ...prev,
-      title: 'Faktory One - Implantação',
-      description: 'Estrutura completa de implantação do ERP Faktory One.',
-      modules: newModules
-    }));
-    setIsDirty(true);
-    
-    if (newModules.length > 0) {
-      setActiveModuleId(newModules[0].id);
-      setActiveLessonId(newModules[0].lessons[0].id);
-    }
-    // Tenta salvar imediatamente no backend (se possível)
-    (async () => {
-      try {
-        const finalData: Trail = { id: trailId, title: 'Faktory One - Implantação', description: 'Estrutura completa de implantação do ERP Faktory One.', modules: newModules };
-        if (id) {
-          await api.put(`/api/trails/${trailId}`, finalData);
-        } else {
-          const res = await api.post<any>('/api/trails', finalData);
-          const returnedId = res?.id || trailId;
-          navigate(`/admin/trilhas/${returnedId}`, { replace: true });
-        }
-        setLastSaved(new Date());
-        setIsDirty(false);
-        showToast('Template Faktory One restaurado e salvo');
-      } catch (err) {
-        console.error('Erro ao salvar template:', err);
-        showToast('Template aplicado localmente. Faça login e salve para persistir');
-      }
-    })();
-  };
-
-  // Promove submódulos de módulos sem título para o nível superior ("soltar" subetapas)
-  const flattenUntitledModules = () => {
-    setTrailData(prev => {
-      const modules = prev.modules || [];
-      const newModules: Module[] = [];
-      modules.forEach(m => {
-        if ((!m.title || m.title.trim() === '') && m.submodules && m.submodules.length > 0) {
-          // promote submodules as top-level modules (preserve order)
-          newModules.push(...m.submodules);
-        } else {
-          newModules.push(m);
-        }
-      });
-      return { ...prev, modules: newModules };
-    });
-    setIsDirty(true);
-    showToast('Subetapas soltadas');
-  };
-
-  const addModule = () => {
-    const newLessonId = genId();
-    const newModuleId = genId();
-    const newModule: Module = {
-      id: newModuleId,
-      title: '',
-      lessons: [
-        {
-          id: newLessonId,
-          title: '',
-          videoUrl: '',
-          videoPosition: 'top',
-          content: '',
-        }
-      ]
-    };
-
-    // optimistic local update
-    setTrailData(prev => ({ ...prev, modules: [...prev.modules, newModule] }));
-    setActiveModuleId(newModule.id);
-    setActiveLessonId(newLessonId);
-    setExpandedModules(prev => ({ ...prev, [newModule.id]: true }));
-
-    console.debug('addModule: created', newModule);
-    showToast('Módulo criado');
-
-    // If trail exists on server, try creating module via nested POST; fallback to global PUT
-    if (id) {
-      (async () => {
-        try {
-          const payload = { id: newModule.id, title: newModule.title, lessons: newModule.lessons };
-          const res = await api.post<any>(`/api/trails/${trailId}/modules`, payload);
-          if (res && res.id) {
-            // replace local module id if server returned canonical id
-            setTrailData(prev => ({ ...prev, modules: prev.modules.map(m => m.id === newModule.id ? { ...m, id: res.id } : m) }));
-          }
-        } catch (err) {
-          console.warn('POST /modules failed, will rely on PUT /api/trails to persist:', err);
-        }
-      })();
-    }
-  };
-
-  const updateModuleTitle = (moduleId: string, title: string) => {
-    const updateInList = (list: Module[]): Module[] =>
-      list.map(m =>
-        m.id === moduleId
-          ? { ...m, title }
-          : { ...m, submodules: m.submodules ? updateInList(m.submodules) : m.submodules }
-      );
-    setTrailData(prev => ({ ...prev, modules: updateInList(prev.modules) }));
-    setIsDirty(true);
-  };
-
-  const removeModule = (moduleId: string) => {
-    setTrailData(prev => ({
-      ...prev,
-      modules: prev.modules.filter(m => m.id !== moduleId)
-    }));
-    setIsDirty(true);
-    if (activeModuleId === moduleId) setActiveModuleId(null);
-    // Não chamar endpoint de remoção por-item; rely no PUT global para persistência.
-    if (id) {
-      console.warn('Backend não expõe endpoint de remoção de módulo; salve a trilha para persistir a remoção.');
-    }
-  };
-
-  const addLesson = (moduleId: string, parentLessonId?: string) => {
-    // ensure active module is set so subsequent edits/saves work
-    setActiveModuleId(moduleId);
-    const newLessonId = genId();
-    const newLesson: Lesson = {
-      id: newLessonId,
-      title: '',
-      videoUrl: '',
-      videoPosition: 'top',
-      content: '',
-    };
-    // Helper: apply a transform to the module matching moduleId anywhere in the tree
-    const applyToModule = (modules: Module[], fn: (m: Module) => Module): Module[] =>
-      modules.map(m => {
-        if (m.id === moduleId) return fn(m);
-        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, fn) };
-        return m;
-      });
-    setTrailData(prev => ({
-      ...prev,
-      modules: applyToModule(prev.modules, m => {
-        if (!parentLessonId) return { ...m, lessons: [...m.lessons, newLesson] };
-        return { ...m, lessons: m.lessons.map(l => l.id === parentLessonId ? { ...l, sublessons: [...(l.sublessons || []), newLesson] } : l) };
-      })
-    }));
-    setIsDirty(true);
-    if (parentLessonId) {
-      setActiveSublessonId(newLesson.id);
-      setActiveLessonId(parentLessonId);
-      // open edit mode for new sublesson
-      setEditingLessonId(newLesson.id);
-      setEditingLessonTitle(newLesson.title);
-      setEditingLessonParentId(parentLessonId);
-      // Backend não tem endpoint para criar sublessons individualmente; salvar a trilha completa.
-      if (id) {
-        (async () => {
-          try {
-            await api.post(`/api/trails/${trailId}/modules/${moduleId}/lessons`, newLesson);
-          } catch (err) {
-            console.warn('POST sublesson failed, rely on PUT /api/trails to persist:', err);
-          }
-        })();
-      }
-    } else {
-      setActiveLessonId(newLesson.id);
-      setActiveSublessonId(null);
-      // open edit mode for new lesson
-      setEditingLessonId(newLesson.id);
-      setEditingLessonTitle(newLesson.title);
-      setEditingLessonParentId(null);
-      // Backend não tem endpoint para criar aulas individualmente; salvar a trilha completa.
-        if (id) {
-          (async () => {
-            try {
-              await api.post(`/api/trails/${trailId}/modules/${moduleId}/lessons`, newLesson);
-            } catch (err) {
-              console.warn('POST lesson failed, rely on PUT /api/trails to persist:', err);
-            }
-          })();
-        }
-    }
-    showToast('Aula criada');
-  };
-
-  const moveModule = (moduleId: string, dir: number) => {
-    setTrailData(prev => {
-      const modules = [...prev.modules];
-      const idx = modules.findIndex(m => m.id === moduleId);
-      const newIdx = idx + dir;
-      if (idx === -1 || newIdx < 0 || newIdx >= modules.length) return prev;
-      const item = modules.splice(idx, 1)[0];
-      modules.splice(newIdx, 0, item);
-      return { ...prev, modules };
-    });
-    setIsDirty(true);
-  };
-
-  const moveLesson = (moduleId: string, lessonId: string, dir: number, parentLessonId?: string) => {
-    const applyToModule = (modules: Module[], fn: (m: Module) => Module): Module[] =>
-      modules.map(m => {
-        if (m.id === moduleId) return fn(m);
-        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, fn) };
-        return m;
-      });
-    setTrailData(prev => ({
-      ...prev,
-      modules: applyToModule(prev.modules, m => {
-        if (!parentLessonId) {
-          const lessons = [...m.lessons];
-          const idx = lessons.findIndex(l => l.id === lessonId);
-          const newIdx = idx + dir;
-          if (idx === -1 || newIdx < 0 || newIdx >= lessons.length) return m;
-          const item = lessons.splice(idx, 1)[0];
-          lessons.splice(newIdx, 0, item);
-          return { ...m, lessons };
-        }
-        return {
-          ...m,
-          lessons: m.lessons.map(l => {
-            if (l.id !== parentLessonId) return l;
-            const sub = [...(l.sublessons || [])];
-            const idx = sub.findIndex(s => s.id === lessonId);
-            const newIdx = idx + dir;
-            if (idx === -1 || newIdx < 0 || newIdx >= sub.length) return l;
-            const item = sub.splice(idx, 1)[0];
-            sub.splice(newIdx, 0, item);
-            return { ...l, sublessons: sub };
-          })
-        };
-      })
-    }));
-    setIsDirty(true);
-  };
-
-  const moveBlockById = (id: string, dir: number) => {
-    if (!activeLesson) return;
-    const content = activeLesson.content || '';
-    const blocks = parseBlocks(content);
-    if (blocks.length === 0) return;
-    const sorted = [...blocks].sort((a, b) => a.index - b.index);
-    const idx = sorted.findIndex(b => b.id === id);
-    if (idx === -1) return;
-    const swapIdx = idx + dir;
-    if (swapIdx < 0 || swapIdx >= sorted.length) return;
-
-    const parts: string[] = [];
-    let last = 0;
-    for (const b of sorted) {
-      parts.push(content.slice(last, b.index));
-      parts.push(content.slice(b.index, b.index + b.length));
-      last = b.index + b.length;
-    }
-    parts.push(content.slice(last));
-
-    const partIndex = idx * 2 + 1;
-    const swapPartIndex = swapIdx * 2 + 1;
-    const newParts = [...parts];
-    const tmp = newParts[partIndex];
-    newParts[partIndex] = newParts[swapPartIndex];
-    newParts[swapPartIndex] = tmp;
-    const newContent = newParts.join('');
-    updateLesson({ content: newContent });
-  };
+  const handleOpenPreview = () => setShowPreviewModal(true);
 
   const setVideoPosition = (pos: 'title-top' | 'top' | 'bottom') => {
     updateLesson({ videoPosition: pos });
   };
 
   const insertVideoAsBlock = () => {
-    if (!activeLesson || !activeLesson.videoUrl) return;
-    const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
-    const html = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
-    const block = genBlock(html, 'video');
-    console.debug('[insertVideoAsBlock] embed=', embed);
-    console.debug('[insertVideoAsBlock] block=', block);
-    updateLesson({ content: (activeLesson.content || '') + '\n' + block, videoUrl: '' });
-    // Log content after small timeout to allow state update
-    setTimeout(() => {
-      console.debug('[insertVideoAsBlock] after update, activeLesson.content=', getActiveLesson()?.content);
-    }, 50);
+    const al = getActiveLesson() as Lesson | null;
+    if (!al || !al.videoUrl) return;
+    const embed = getEmbedUrl(al.videoUrl) || al.videoUrl;
+    addBlock('iframe', { url: embed });
+    updateLesson({ videoUrl: '' });
     setShowVideoModal(false);
     showToast('Vídeo movido para o conteúdo como bloco');
   };
 
-  // Drag & drop refs and handlers
+  // ── Actions menu close handler ──
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!showActionsMenu) return;
+      if (!actionsMenuRef.current) return;
+      if (!actionsMenuRef.current.contains(e.target as Node)) setShowActionsMenu(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setShowActionsMenu(false); }
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDocClick); document.removeEventListener('keydown', onKey); };
+  }, [showActionsMenu]);
+
+  // ── Drag & drop refs ──
   const dragBlockIdRef = useRef<string | null>(null);
   const dragModuleIdRef = useRef<string | null>(null);
   const dragLessonIdRef = useRef<string | null>(null);
@@ -867,17 +149,8 @@ export default function TrilhaBuilder() {
   const dragTitleRef = useRef<boolean>(false);
   const dragPageTitleRef = useRef<boolean>(false);
   const dragImageRef = useRef<string | null>(null);
-  const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Sync the inline title editor only when the active lesson changes — NOT on every re-render.
-  // Using dangerouslySetInnerHTML would reset the user's edits on any unrelated state update.
-  useEffect(() => {
-    const el = titleInputRef.current as HTMLDivElement | null;
-    if (!el) return;
-    const al = getActiveLesson();
-    el.innerHTML = (al as any)?.titleHtml || (al?.title ? `<h2>${al.title}</h2>` : '');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLessonId]);
+  // ── Remaining refs ──
   const blocksAreaRef = useRef<HTMLDivElement | null>(null);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -885,113 +158,132 @@ export default function TrilhaBuilder() {
   const [dragPreview, setDragPreview] = useState<{ type: 'none' | 'title' | 'content' | 'block'; id?: string; rect?: { top: number; left: number; width: number; height: number }; pos?: 'before' | 'after'; source?: 'list' | 'preview' }>({ type: 'none' });
   const [moduleParentMenuOpenId, setModuleParentMenuOpenId] = useState<string | null>(null);
 
-  // ── Lesson tree helpers (cross-module) ──────────────────────────────────
-  const removeLessonFromTree = (lessons: Lesson[], id: string): { removed?: Lesson; lessons: Lesson[] } => {
-    for (let i = 0; i < lessons.length; i++) {
-      if (lessons[i].id === id) {
-        const copy = [...lessons];
-        const [removed] = copy.splice(i, 1);
-        return { removed, lessons: copy };
-      }
-      if (lessons[i].sublessons?.length) {
-        const res = removeLessonFromTree(lessons[i].sublessons!, id);
-        if (res.removed) {
-          const copy = lessons.map((l, idx) => idx === i ? { ...l, sublessons: res.lessons } : l);
-          return { removed: res.removed, lessons: copy };
+  // Sync the inline title editor only when the active lesson changes
+  useEffect(() => {
+    const el = titleInputRef.current as unknown as HTMLDivElement | null;
+    if (!el) return;
+    const al = getActiveLesson();
+    el.innerHTML = (al as any)?.titleHtml || (al?.title ? `<h2>${al.title}</h2>` : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLessonId]);
+
+  // ── Lesson edit helpers (depend on UI state) ──
+  const saveEditLesson = () => {
+    if (!editingLessonId || !activeModuleId) return;
+    const applyToModule = (modules: Module[], moduleId: string, fn: (m: Module) => Module): Module[] =>
+      modules.map(m => {
+        if (m.id === moduleId) return fn(m);
+        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, moduleId, fn) };
+        return m;
+      });
+    const updated = ((): typeof trailData => {
+      const modules = applyToModule(trailData.modules, activeModuleId, m => {
+        if (!editingLessonParentId) {
+          return { ...m, etapas: (m.etapas || []).map(l => l.id === editingLessonId ? { ...l, title: editingLessonTitle, titleHtml: undefined } as any : l) };
         }
-      }
+        return { ...m, etapas: (m.etapas || []).map(l => l.id === editingLessonParentId ? { ...l, subetapas: ((l.subetapas || []) || []).map(s => s.id === editingLessonId ? { ...s, title: editingLessonTitle, titleHtml: undefined } as any : s) } : l) };
+      });
+      return { ...trailData, modules };
+    })();
+    if (editingLessonId === activeLessonId) {
+      const el = titleInputRef.current as unknown as HTMLDivElement | null;
+      if (el) el.innerHTML = `<h2>${editingLessonTitle}</h2>`;
     }
-    return { lessons };
+    setTrailData(updated);
+    setIsDirty(true);
+    if (id) {
+      (async () => {
+        setSaving(true);
+        try {
+          const finalData: Trail = { id: trailId, ...updated };
+          await trilhaBuilderApi.updateTrail(trailId, finalData);
+          setLastSaved(new Date());
+          setIsDirty(false);
+          showToast('Título salvo');
+        } catch (err) {
+          console.error('Erro salvando título imediatamente:', err);
+          showToast('Erro ao salvar título — salve a trilha manualmente');
+        } finally { setSaving(false); }
+      })();
+    }
+    setEditingLessonId(null); setEditingLessonTitle(''); setEditingLessonParentId(null);
+    showToast('Aula renomeada');
   };
 
-  const removeLessonFromAllModules = (modules: Module[], lessonId: string): { removed?: Lesson; modules: Module[] } => {
-    let removed: Lesson | undefined;
-    const updated = modules.map(m => {
-      const res = removeLessonFromTree(m.lessons, lessonId);
-      if (res.removed) { removed = res.removed; return { ...m, lessons: res.lessons }; }
-      if (m.submodules) {
-        const sub = removeLessonFromAllModules(m.submodules, lessonId);
-        if (sub.removed) { removed = sub.removed; return { ...m, submodules: sub.modules }; }
+  const cancelEditLesson = () => {
+    setEditingLessonId(null); setEditingLessonTitle(''); setEditingLessonParentId(null);
+  };
+
+  // ── Image upload ──
+  const handleImageFile = (file: File) => {
+    if (id && activeModuleId && activeLessonId) {
+      setImageUploading(true); setUploadProgress(0);
+      (async () => {
+        let xhr: XMLHttpRequest | null = null;
+        try {
+          const user = auth.currentUser;
+          const token = user ? await user.getIdToken() : null;
+          const form = new FormData(); form.append('image', file);
+          await new Promise<void>((resolve, reject) => {
+            xhr = new XMLHttpRequest();
+            const url = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001'}/api/trails/${trailId}/modules/${activeModuleId}/lessons/${activeLessonId}/image`;
+            xhr.open('POST', url, true);
+            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            xhr.upload.onprogress = (e) => { if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100)); };
+            xhr.onload = () => {
+              const status = xhr!.status; let data: any = null;
+              try { data = xhr!.responseText ? JSON.parse(xhr!.responseText) : null; } catch { data = xhr!.responseText; }
+              if (status >= 200 && status < 300) { const imageUrl = data?.imageUrl || data?.url; if (imageUrl) { updateLesson({ imageUrl }); showToast('Imagem enviada e salva no servidor'); resolve(); return; } reject(new Error('Resposta do servidor não continha imageUrl')); return; }
+              if (status === 413) { reject(new Error('Tamanho do arquivo excede o limite de 5MB (413)')); return; }
+              reject(new Error((data && data.message) || `Upload failed (${status})`));
+            };
+            xhr.onerror = () => reject(new Error('Erro na requisição de upload'));
+            xhr.onabort = () => reject(new Error('Upload abortado'));
+            xhr.send(form);
+          });
+          setUploadProgress(100); return;
+        } catch (err: any) {
+          console.warn('Upload falhou, usando DataURL como fallback:', err);
+          if (err?.message?.includes('5MB')) showToast('Erro: arquivo maior que 5MB');
+          const reader = new FileReader();
+          reader.onload = () => { updateLesson({ imageUrl: reader.result as string }); showToast('Upload falhou — imagem armazenada localmente'); };
+          reader.readAsDataURL(file);
+        } finally {
+          setImageUploading(false); setTimeout(() => setUploadProgress(0), 700);
+          try { if (xhr) { try { (xhr as any).abort(); } catch { } } } catch { }
+        }
+      })();
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => { updateLesson({ imageUrl: reader.result as string }); showToast('Imagem adicionada à aula (local)'); };
+    reader.readAsDataURL(file);
+  };
+
+  const activeLesson = getActiveLesson() as Lesson | null;
+
+  // Auto-resize title textarea
+  useEffect(() => {
+    const el = titleInputRef.current; if (!el) return;
+    el.style.height = 'auto'; el.style.height = `${Math.max(32, el.scrollHeight)}px`;
+  }, [activeLesson?.title, activeLesson?.id]);
+
+  // Populate WYSIWYG editor when block editor opens
+  useEffect(() => {
+    if (!showBlockEditor || !editingBlockId) return;
+    const raf = requestAnimationFrame(() => {
+      if (wysiwygRef.current && wysiwygLoadedBlockRef.current !== editingBlockId) {
+        wysiwygRef.current.innerHTML = editingBlockHtml;
+        wysiwygLoadedBlockRef.current = editingBlockId;
+        const range = document.createRange(); range.selectNodeContents(wysiwygRef.current); range.collapse(false);
+        const sel = window.getSelection(); if (sel) { sel.removeAllRanges(); sel.addRange(range); }
       }
-      return m;
     });
-    return { removed, modules: updated };
-  };
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showBlockEditor, editingBlockId]);
 
-  const addLessonAsSublesson = (lessons: Lesson[], targetId: string, toAdd: Lesson): Lesson[] =>
-    lessons.map(l => {
-      if (l.id === targetId) return { ...l, sublessons: [...(l.sublessons || []), toAdd] };
-      if (l.sublessons?.length) return { ...l, sublessons: addLessonAsSublesson(l.sublessons, targetId, toAdd) };
-      return l;
-    });
 
-  // Move lesson to become a top-level lesson in a (possibly different) module
-  const moveLessonToModule = (srcId: string, targetModuleId: string) => {
-    setTrailData(prev => {
-      const { removed, modules: withoutSrc } = removeLessonFromAllModules(prev.modules, srcId);
-      if (!removed) return prev;
-      const addToMod = (mods: Module[]): Module[] =>
-        mods.map(m => {
-          if (m.id === targetModuleId) return { ...m, lessons: [...m.lessons, removed!] };
-          return { ...m, submodules: m.submodules ? addToMod(m.submodules) : m.submodules };
-        });
-      return { ...prev, modules: addToMod(withoutSrc) };
-    });
-    setIsDirty(true);
-    showToast('Etapa movida para o módulo');
-  };
-
-  // Move lesson to become a sublesson of another lesson (cross-module)
-  const moveLessonInto = (srcId: string, targetId: string) => {
-    if (srcId === targetId) return;
-    setTrailData(prev => {
-      const { removed, modules: withoutSrc } = removeLessonFromAllModules(prev.modules, srcId);
-      if (!removed) return prev;
-      const addToTarget = (mods: Module[]): Module[] =>
-        mods.map(m => ({
-          ...m,
-          lessons: addLessonAsSublesson(m.lessons, targetId, removed!),
-          submodules: m.submodules ? addToTarget(m.submodules) : m.submodules,
-        }));
-      return { ...prev, modules: addToTarget(withoutSrc) };
-    });
-    setIsDirty(true);
-    showToast('Etapa movida para dentro de outra');
-  };
-  // ─────────────────────────────────────────────────────────────────────────
-
-  const isDescendantModule = (modules: Module[], parentId: string, candidateId: string): boolean => {
-    const parent = findModuleById(modules, parentId);
-    if (!parent || !parent.submodules) return false;
-    const recurse = (list: Module[]): boolean => {
-      for (const m of list) {
-        if (m.id === candidateId) return true;
-        if (m.submodules && recurse(m.submodules)) return true;
-      }
-      return false;
-    };
-    return recurse(parent.submodules);
-  };
-
-  // Promote all direct submodules of a module to top-level (inserted after the parent)
-  const promoteSubmodules = (moduleId: string) => {
-    setTrailData(prev => {
-      const idx = prev.modules.findIndex(m => m.id === moduleId);
-      if (idx === -1) return prev;
-      const parent = prev.modules[idx];
-      if (!parent.submodules?.length) return prev;
-      const sub = parent.submodules;
-      const updated = [
-        ...prev.modules.slice(0, idx),
-        { ...parent, submodules: [] },
-        ...sub,
-        ...prev.modules.slice(idx + 1),
-      ];
-      return { ...prev, modules: updated };
-    });
-    setIsDirty(true);
-    showToast('Subm\u00f3dulos promovidos para o n\u00edvel superior');
-  };
 
   const renderModule = (module: Module, depth: number, mIndex: number) => {
     return (
@@ -1107,7 +399,7 @@ export default function TrilhaBuilder() {
             const label = path.join('.');
             const isTarget = dragLessonTargetId === lesson.id;
             const isActive = activeLessonId === lesson.id;
-            const hasChildren = !!(lesson.sublessons?.length);
+            const hasChildren = !!(lesson.subetapas?.length);
             const isExpanded = hasChildren ? (expandedLessons[lesson.id] !== false) : false;
             return (
               <div key={lesson.id}>
@@ -1133,7 +425,7 @@ export default function TrilhaBuilder() {
                     if (srcId && srcId !== lesson.id) moveLessonInto(srcId, lesson.id);
                     dragLessonIdRef.current = null;
                   }}
-                  onClick={() => { setActiveModuleId(module.id); setActiveLessonId(lesson.id); setActiveSublessonId(null); }}
+                  onClick={() => { setActiveModuleId(module.id); setActiveLessonId(lesson.id); }}
                 >
                   <div className="flex items-center gap-1.5 flex-1 min-w-0">
                     {/* Expand/collapse toggle — same visual pattern as modules */}
@@ -1182,15 +474,15 @@ export default function TrilhaBuilder() {
                     <div className="h-1 rounded bg-faktory-blue/40 animate-pulse" />
                   </div>
                 )}
-                {/* Sublessons recursively — only if expanded */}
-                {hasChildren && isExpanded && (lesson.sublessons || []).map((sub, sIdx) => renderLesson(sub, [...path, sIdx + 1], lesson.id))}
+                {/* Subetapas recursively — only if expanded */}
+                {hasChildren && isExpanded && (lesson.subetapas || []).map((sub, sIdx) => renderLesson(sub as any, [...path, sIdx + 1], lesson.id))}
               </div>
             );
           };
 
           return (
             <div className="space-y-0.5">
-              {module.lessons.map((lesson, lIdx) => renderLesson(lesson, [lIdx + 1]))}
+              {(module.etapas || []).map((lesson, lIdx) => renderLesson(lesson, [lIdx + 1]))}
               {/* render nested submodules, if any */}
               {(module.submodules || []).map((sm, idx) => renderModule(sm, depth + 1, idx))}
             </div>
@@ -1200,395 +492,11 @@ export default function TrilhaBuilder() {
     );
   };
 
-  const reorderBlock = (dragId: string, dropId: string) => {
-    if (!activeLesson) return;
-    const content = activeLesson.content || '';
-    const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
-    const fromIdx = blocks.findIndex(b => b.id === dragId);
-    const toIdx = blocks.findIndex(b => b.id === dropId);
-    if (fromIdx === -1 || toIdx === -1) return;
-
-    const parts: string[] = [];
-    let last = 0;
-    for (const b of blocks) {
-      parts.push(content.slice(last, b.index));
-      parts.push(content.slice(b.index, b.index + b.length));
-      last = b.index + b.length;
-    }
-    parts.push(content.slice(last));
-
-    const element = parts.splice(fromIdx * 2 + 1, 1)[0];
-    parts.splice(toIdx * 2 + 1, 0, element);
-    const newContent = parts.join('');
-    updateLesson({ content: newContent });
-  };
-
-  const reorderBlockTo = (dragId: string, dropId: string, pos: 'before' | 'after') => {
-    if (!activeLesson) return;
-    const content = activeLesson.content || '';
-    const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
-    const fromIdx = blocks.findIndex(b => b.id === dragId);
-    const toIdx = blocks.findIndex(b => b.id === dropId);
-    if (fromIdx === -1 || toIdx === -1) return;
-
-    // Build parts array [prefix, block, prefix, block, ...]
-    const parts: string[] = [];
-    let last = 0;
-    for (const b of blocks) {
-      parts.push(content.slice(last, b.index));
-      parts.push(content.slice(b.index, b.index + b.length));
-      last = b.index + b.length;
-    }
-    parts.push(content.slice(last));
-
-    const element = parts.splice(fromIdx * 2 + 1, 1)[0];
-
-    // Calculate insertion index in parts for before/after
-    const insertAt = pos === 'before' ? (toIdx * 2) : (toIdx * 2 + 2);
-    parts.splice(insertAt, 0, element);
-
-    const newContent = parts.join('');
-    updateLesson({ content: newContent });
-  };
-
-  const duplicateBlockById = (id: string) => {
-    if (!activeLesson) return;
-    const content = activeLesson.content || '';
-    const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
-    const idx = blocks.findIndex(b => b.id === id);
-    if (idx === -1) return;
-    const newBlock = genBlock(blocks[idx].html, blocks[idx].type);
-    // insert after
-    const parts: string[] = [];
-    let last = 0;
-    for (const b of blocks) {
-      parts.push(content.slice(last, b.index));
-      parts.push(content.slice(b.index, b.index + b.length));
-      last = b.index + b.length;
-    }
-    parts.push(content.slice(last));
-    parts.splice(idx * 2 + 2, 0, newBlock);
-    updateLesson({ content: parts.join('') });
-    showToast('Bloco duplicado');
-  };
-  
-
-  const removeLesson = (moduleId: string, lessonId: string, parentLessonId?: string) => {
-    const ok = window.confirm('Remover esta aula? Esta ação não pode ser desfeita.');
-    if (!ok) return;
-    const applyToModule = (modules: Module[], fn: (m: Module) => Module): Module[] =>
-      modules.map(m => {
-        if (m.id === moduleId) return fn(m);
-        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, fn) };
-        return m;
-      });
-    setTrailData(prev => ({
-      ...prev,
-      modules: applyToModule(prev.modules, m => {
-        if (!parentLessonId) return { ...m, lessons: m.lessons.filter(l => l.id !== lessonId) };
-        return { ...m, lessons: m.lessons.map(l => l.id === parentLessonId ? { ...l, sublessons: (l.sublessons || []).filter(s => s.id !== lessonId) } : l) };
-      })
-    }));
-    setIsDirty(true);
-    if (activeLessonId === lessonId) setActiveLessonId(null);
-    if (activeSublessonId === lessonId) setActiveSublessonId(null);
-    // Remover no backend
-    if (id) {
-      if (parentLessonId) {
-        // Não chamar endpoint de remoção de subaula (não existe no backend). Persistir via PUT /api/trails/{id}.
-        console.warn('Backend não expõe endpoint para remover subaula; salve a trilha para persistir a remoção.');
-      } else {
-        // Não chamar endpoint de remoção de aula; usar PUT global.
-        console.warn('Backend não expõe endpoint para remover aula; salve a trilha para persistir a remoção.');
-      }
-    }
-    showToast('Aula removida');
-  };
-
-  const startEditLesson = (lessonId: string, title: string, parentLessonId?: string) => {
-    setEditingLessonId(lessonId);
-    setEditingLessonTitle(title);
-    setEditingLessonParentId(parentLessonId || null);
-  };
-
-  const saveEditLesson = () => {
-    if (!editingLessonId || !activeModuleId) return;
-
-    const applyToModule = (modules: Module[], moduleId: string, fn: (m: Module) => Module): Module[] =>
-      modules.map(m => {
-        if (m.id === moduleId) return fn(m);
-        if (m.submodules?.length) return { ...m, submodules: applyToModule(m.submodules, moduleId, fn) };
-        return m;
-      });
-
-    // Compute updated trail data with the edited title so we can both update state and persist immediately
-    const updated = ((): typeof trailData => {
-      const modules = applyToModule(trailData.modules, activeModuleId, m => {
-        if (!editingLessonParentId) {
-          // Also clear titleHtml so the inline page editor reflects the new sidebar title
-          return { ...m, lessons: m.lessons.map(l => l.id === editingLessonId ? { ...l, title: editingLessonTitle, titleHtml: undefined } as any : l) };
-        }
-        return { ...m, lessons: m.lessons.map(l => l.id === editingLessonParentId ? { ...l, sublessons: (l.sublessons || []).map(s => s.id === editingLessonId ? { ...s, title: editingLessonTitle, titleHtml: undefined } as any : s) } : l) };
-      });
-      return { ...trailData, modules };
-    })();
-
-    // If this is the currently visible lesson, update the inline title DOM directly so the user sees the change
-    if (editingLessonId === activeLessonId) {
-      const el = titleInputRef.current as HTMLDivElement | null;
-      if (el) el.innerHTML = `<h2>${editingLessonTitle}</h2>`;
-    }
-
-    setTrailData(updated);
-    setIsDirty(true);
-
-    // If this trail exists on the server, try to persist immediately to avoid relying only on autosave
-    if (id) {
-      (async () => {
-        setSaving(true);
-        try {
-          const finalData: Trail = { id: trailId, ...updated };
-          await api.put(`/api/trails/${trailId}`, finalData);
-          setLastSaved(new Date());
-          setIsDirty(false);
-          showToast('Título salvo');
-        } catch (err) {
-          console.error('Erro salvando título imediatamente:', err);
-          showToast('Erro ao salvar título — salve a trilha manualmente');
-        } finally {
-          setSaving(false);
-        }
-      })();
-    } else {
-      console.warn('Renomeio aplicado localmente. Salve a trilha para persistir o novo título no backend.');
-      showToast('Título atualizado localmente — salve a trilha para persistir');
-    }
-
-    setEditingLessonId(null);
-    setEditingLessonTitle('');
-    setEditingLessonParentId(null);
-    showToast('Aula renomeada');
-  };
-
-  const cancelEditLesson = () => {
-    setEditingLessonId(null);
-    setEditingLessonTitle('');
-    setEditingLessonParentId(null);
-  };
-
-  const updateLesson = (updates: Partial<Lesson>) => {
-    if (!activeLessonId) return;
-    console.debug('[updateLesson] activeLessonId=', activeLessonId, 'updates=', updates);
-    try {
-      console.debug('[updateLesson] before content=', getActiveLesson()?.content);
-    } catch (e) { /* noop */ }
-
-    const updateLessonInTree = (lessons: Lesson[]): Lesson[] =>
-      lessons.map(l => {
-        if (l.id === activeLessonId) return { ...l, ...updates };
-        if (l.sublessons?.length) return { ...l, sublessons: updateLessonInTree(l.sublessons) };
-        return l;
-      });
-
-    const updateInModules = (modules: Module[]): Module[] =>
-      modules.map(m => ({
-        ...m,
-        lessons: updateLessonInTree(m.lessons),
-        submodules: m.submodules ? updateInModules(m.submodules) : m.submodules,
-      }));
-
-    setTrailData(prev => ({ ...prev, modules: updateInModules(prev.modules) }));
-    setIsDirty(true);
-    setTimeout(() => {
-      try {
-        console.debug('[updateLesson] after update, getActiveLesson().content=', getActiveLesson()?.content);
-      } catch (e) { /* noop */ }
-    }, 200);
-  };
-
-  const findModuleDeep = (modules: Module[], id: string): Module | undefined => {
-    for (const m of modules) {
-      if (m.id === id) return m;
-      if (m.submodules?.length) {
-        const found = findModuleDeep(m.submodules, id);
-        if (found) return found;
-      }
-    }
-    return undefined;
-  };
-
-  const findLessonInTree = (lessons: Lesson[], id: string): Lesson | undefined => {
-    for (const l of lessons) {
-      if (l.id === id) return l;
-      if (l.sublessons?.length) {
-        const found = findLessonInTree(l.sublessons, id);
-        if (found) return found;
-      }
-    }
-    return undefined;
-  };
-
-  const getActiveLesson = () => {
-    if (!activeLessonId) return null;
-    const searchModules = (mods: Module[]): Lesson | null => {
-      for (const m of mods) {
-        const found = findLessonInTree(m.lessons, activeLessonId);
-        if (found) return found;
-        if (m.submodules?.length) {
-          const sub = searchModules(m.submodules);
-          if (sub) return sub;
-        }
-      }
-      return null;
-    };
-    return searchModules(trailData.modules);
-  };
-
-  const getActiveLessonTitleHtml = () => {
-    const al = getActiveLesson();
-    if (!al) return '';
-    // Prefer HTML-preserved title if present, otherwise wrap plain title in H2
-    return (al as any).titleHtml || (al.title ? `<h2>${al.title}</h2>` : '');
-  };
-
-  const getEmbedUrl = (url: string) => {
-    if (!url) return '';
-    
-    // YouTube standard and unlisted
-    const ytMatch = url.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-    if (ytMatch) {
-      return `https://www.youtube.com/embed/${ytMatch[1]}`;
-    }
-
-    // Vimeo
-    const vimeoMatch = url.match(/(?:https?:\/\/)?(?:www\.)?(?:vimeo\.com\/)([0-9]+)/);
-    if (vimeoMatch) {
-      return `https://player.vimeo.com/video/${vimeoMatch[1]}`;
-    }
-
-    return url;
-  };
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(''), 3000) as unknown as number;
-  };
-
-  const genBlock = (html: string, type = 'custom') => {
-    const id = `b-${genId()}`;
-    const sanitizeOpts: Parameters<typeof DOMPurify.sanitize>[1] =
-      (type === 'video' || type === 'embed')
-        ? { WHOLE_DOCUMENT: false, ADD_TAGS: ['iframe'], ADD_ATTR: ['src', 'width', 'height', 'frameborder', 'allowfullscreen', 'allow', 'title'] }
-        : { WHOLE_DOCUMENT: false };
-    const safe = DOMPurify.sanitize(html, sanitizeOpts);
-    return `<!-- block:${type}:${id} -->\n${safe}\n<!-- /block:${type}:${id} -->`;
-  };
-
-  const genId = () => {
-    try { return crypto.randomUUID(); } catch { return `${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
-  };
-
-  const handleImageFile = (file: File) => {
-    // If trail exists on server and lesson/module ids are available, try uploading
-    if (id && activeModuleId && activeLessonId) {
-      setImageUploading(true);
-      setUploadProgress(0);
-      (async () => {
-        let xhr: XMLHttpRequest | null = null;
-        try {
-          const user = auth.currentUser;
-          const token = user ? await user.getIdToken() : null;
-          const form = new FormData();
-          form.append('image', file);
-
-          await new Promise<void>((resolve, reject) => {
-            xhr = new XMLHttpRequest();
-            const url = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001'}/api/trails/${trailId}/modules/${activeModuleId}/lessons/${activeLessonId}/image`;
-            xhr.open('POST', url, true);
-            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-            xhr.upload.onprogress = (e) => {
-              if (e.lengthComputable) {
-                const pct = Math.round((e.loaded / e.total) * 100);
-                setUploadProgress(pct);
-              }
-            };
-            xhr.onload = () => {
-              const status = xhr!.status;
-              const text = xhr!.responseText;
-              let data: any = null;
-              try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-              if (status >= 200 && status < 300) {
-                const imageUrl = data?.imageUrl || data?.url;
-                if (imageUrl) {
-                  updateLesson({ imageUrl });
-                  showToast('Imagem enviada e salva no servidor');
-                  resolve();
-                  return;
-                }
-                reject(new Error('Resposta do servidor não continha imageUrl'));
-                return;
-              }
-              if (status === 413) {
-                reject(new Error('Tamanho do arquivo excede o limite de 5MB (413)'));
-                return;
-              }
-              reject(new Error((data && data.message) || `Upload failed (${status})`));
-            };
-            xhr.onerror = () => reject(new Error('Erro na requisição de upload'));
-            xhr.onabort = () => reject(new Error('Upload abortado'));
-            xhr.send(form);
-          });
-          setUploadProgress(100);
-          return;
-        } catch (err: any) {
-          console.warn('Upload falhou, usando DataURL como fallback:', err);
-          if (err && err.message && err.message.includes('5MB')) showToast('Erro: arquivo maior que 5MB');
-          const reader = new FileReader();
-          reader.onload = () => {
-            const dataUrl = reader.result as string;
-            updateLesson({ imageUrl: dataUrl });
-            showToast('Upload falhou — imagem armazenada localmente (salve para persistir)');
-          };
-          reader.readAsDataURL(file);
-        } finally {
-          setImageUploading(false);
-          setTimeout(() => setUploadProgress(0), 700);
-          // abort XHR if still open
-          try {
-            if (xhr) {
-              try { (xhr as any).abort(); } catch (e) { /* noop */ }
-            }
-          } catch (e) { /* noop */ }
-        }
-      })();
-      return;
-    }
-
-    // Fallback: read as DataURL and attach locally
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      updateLesson({ imageUrl: dataUrl });
-      showToast('Imagem adicionada à aula (local) — salve para persistir');
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const parseBlocks = (content: string) => {
-    const re = /<!-- block:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+) -->([\s\S]*?)<!-- \/block:\1:\2 -->/g;
-    const blocks: Array<any> = [];
-    let m;
-    while ((m = re.exec(content)) !== null) {
-      blocks.push({ type: m[1], id: m[2], html: m[3], index: m.index, length: m[0].length });
-    }
-    return blocks;
-  };
 
   const renderBlockList = () => {
     const content = activeLesson?.content || '';
     const blocks = parseBlocks(content).sort((a, b) => a.index - b.index);
-    console.debug('[renderBlockList] content length=', content.length, 'blocks=', blocks.map((x:any)=>({ id: x.id, type: x.type, index: x.index })));
+    console.debug('[renderBlockList] content length=', content.length, 'blocks=', blocks.map((x: any) => ({ id: x.id, type: x.type, index: x.index })));
     if (blocks.length === 0) {
       return (
         <div className="text-center p-8 text-slate-400">
@@ -1722,7 +630,7 @@ export default function TrilhaBuilder() {
                     setDragPreview({ type: 'none' });
                     return;
                   }
-                    if (dragTitleRef.current && activeLesson) {
+                  if (dragTitleRef.current && activeLesson) {
                     const titleHtml = getActiveLessonTitleHtml();
                     const block = genBlock(titleHtml, 'title');
                     const content = activeLesson.content || '';
@@ -1756,14 +664,14 @@ export default function TrilhaBuilder() {
                     <div className="flex items-center gap-1 bg-faktory-blue text-white text-[9px] font-bold px-1.5 py-0.5 rounded cursor-grab select-none">
                       <GripVertical size={10} />
                       {b.type === 'custom' ? 'Texto/HTML' :
-                       b.type === 'title' ? 'Título' :
-                       b.type === 'image' ? 'Imagem' :
-                       b.type === 'video' ? 'Vídeo' :
-                       b.type === 'highlight' ? 'Destaque' :
-                       b.type === 'group' ? 'Grupo' :
-                       b.type === 'embed' ? 'Embed' :
-                       b.type === 'logo' ? 'Logo' :
-                       b.type}
+                        b.type === 'title' ? 'Título' :
+                          b.type === 'image' ? 'Imagem' :
+                            b.type === 'video' ? 'Vídeo' :
+                              b.type === 'highlight' ? 'Destaque' :
+                                b.type === 'group' ? 'Grupo' :
+                                  b.type === 'embed' ? 'Embed' :
+                                    b.type === 'logo' ? 'Logo' :
+                                      b.type}
                     </div>
                     <div className="flex items-center gap-0.5">
                       <button onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Editar"><Pencil size={11} /></button>
@@ -1778,7 +686,7 @@ export default function TrilhaBuilder() {
                 )}
                 {/* ── Preview do conteúdo ── */}
                 <div className="p-3">
-                  { (b.type === 'video' || b.type === 'embed' || b.type === 'title') ? (
+                  {(b.type === 'video' || b.type === 'embed' || b.type === 'title') ? (
                     <div className="w-full" dangerouslySetInnerHTML={{ __html: b.html }} />
                   ) : b.type === 'image' ? (
                     <div className="w-full flex items-center justify-center">
@@ -1786,7 +694,7 @@ export default function TrilhaBuilder() {
                     </div>
                   ) : (
                     <div className="text-xs text-slate-400 line-clamp-3" dangerouslySetInnerHTML={{ __html: b.html }} />
-                  ) }
+                  )}
                 </div>
               </div>
             </div>
@@ -1818,161 +726,6 @@ export default function TrilhaBuilder() {
     );
   };
 
-  const removeBlockById = (id: string) => {
-    if (!activeLesson) return;
-    const content = activeLesson.content || '';
-    const re = new RegExp(`<!-- block:([a-zA-Z0-9_-]+):${id} -->([\\s\\S]*?)<!-- \\/block:\\1:${id} -->`, 'g');
-    const newContent = content.replace(re, '');
-    updateLesson({ content: newContent });
-    showToast('Bloco removido');
-  };
-
-  const editBlockById = (id: string) => {
-    if (!activeLesson) return;
-    const content = activeLesson.content || '';
-    const re = new RegExp(`(<!-- block:([a-zA-Z0-9_-]+):${id} -->)([\\s\\S]*?)(<!-- \\/block:\\2:${id} -->)`, 'g');
-    const m = re.exec(content);
-    if (!m) return;
-    const blockType = m[2];
-    const currentHtml = m[3].trim();
-
-    // For title blocks: load the full HTML (including heading tag) so the editor is truly WYSIWYG
-    if (blockType === 'title') {
-      const headingTags = ['h1','h2','h3','h4','h5','h6'];
-      const tagMatch = currentHtml.match(/^<([a-z0-9]+)/i);
-      const htmlForEditor = (tagMatch && headingTags.includes(tagMatch[1].toLowerCase()))
-        ? currentHtml
-        : `<h2>${currentHtml}</h2>`;
-      setEditingBlockIdState(id);
-      setEditingBlockTypeState(blockType);
-      setEditingBlockHtmlState(htmlForEditor);
-      initEditorHistory(htmlForEditor);
-      setUseWysiwygEditor(true);
-      setShowBlockEditor(true);
-      return;
-    }
-
-    // For video/embed blocks: extract iframe src URL
-    if (blockType === 'video' || blockType === 'embed') {
-      const srcMatch = currentHtml.match(/src=["']([^"']+)["']/);
-      const url = srcMatch ? srcMatch[1] : '';
-      setEditingBlockIdState(id);
-      setEditingBlockTypeState(blockType);
-      setEditingBlockHtmlState(url);
-      initEditorHistory(url);
-      setShowBlockEditor(true);
-      return;
-    }
-
-    // Default: raw HTML
-    setEditingBlockIdState(id);
-    setEditingBlockTypeState(blockType);
-    setEditingBlockHtmlState(currentHtml);
-    initEditorHistory(currentHtml);
-    setShowBlockEditor(true);
-  };
-
-  const saveEditedBlock = () => {
-    if (!activeLesson || !editingBlockIdState) return;
-    flushEditorHistory();
-    // Sync latest HTML from WYSIWYG editor ref before saving
-    if (useWysiwygEditor && wysiwygRef.current) {
-      setEditingBlockHtmlState(wysiwygRef.current.innerHTML);
-    }
-    const currentHtmlToSave = (useWysiwygEditor && wysiwygRef.current) ? wysiwygRef.current.innerHTML : editingBlockHtmlState;
-    const id = editingBlockIdState;
-    const blockType = editingBlockTypeState;
-    const content = activeLesson.content || '';
-    const re = new RegExp(`(<!-- block:([a-zA-Z0-9_-]+):${id} -->)([\\s\\S]*?)(<!-- \\/block:\\2:${id} -->)`, 'g');
-    const m = re.exec(content);
-    if (!m) return;
-
-    let newHtml: string;
-    if (blockType === 'title') {
-      // editor already contains full HTML (e.g. <h2>text</h2>), just sanitize
-      newHtml = DOMPurify.sanitize(currentHtmlToSave, { WHOLE_DOCUMENT: false });
-    } else if (blockType === 'video' || blockType === 'embed') {
-      // rebuild iframe with new URL
-      const embedUrl = getEmbedUrl(editingBlockHtmlState) || editingBlockHtmlState;
-      newHtml = `<div class="embed"><iframe src="${embedUrl}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
-    } else {
-      // If the user entered plain text (no HTML tags), convert paragraphs/newlines
-      // into proper <p> and <br/> so spacing and paragraphs are preserved when
-      // rendering via dangerouslySetInnerHTML. If input already contains HTML
-      // tags, preserve them and sanitize.
-      const looksLikeHtml = /<[^>]+>/.test(currentHtmlToSave);
-      if (!looksLikeHtml) {
-        // escape basic HTML entities then convert double newlines -> paragraphs
-        const escapeHtml = (str: string) =>
-          str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-        const paragraphs = currentHtmlToSave
-          .split(/\n\s*\n/) // double newline separates paragraphs
-          .map(p => p.split(/\n/).map(line => escapeHtml(line)).join('<br/>'))
-          .map(p => `<p>${p}</p>`)
-          .join('\n');
-        const sanitizeOpts: Parameters<typeof DOMPurify.sanitize>[1] = { WHOLE_DOCUMENT: false };
-        newHtml = DOMPurify.sanitize(paragraphs, sanitizeOpts);
-      } else {
-        const sanitizeOpts: Parameters<typeof DOMPurify.sanitize>[1] =
-          (blockType === 'video' || blockType === 'embed')
-            ? { WHOLE_DOCUMENT: false, ADD_TAGS: ['iframe'], ADD_ATTR: ['src', 'width', 'height', 'frameborder', 'allowfullscreen', 'allow', 'title'] }
-            : { WHOLE_DOCUMENT: false };
-        newHtml = DOMPurify.sanitize(currentHtmlToSave, sanitizeOpts);
-      }
-    }
-
-    const replaced = content.replace(re, `${m[1]}\n${newHtml}\n${m[4]}`);
-    updateLesson({ content: replaced });
-    setShowBlockEditor(false);
-    setEditingBlockIdState(null);
-    setEditingBlockHtmlState('');
-    setEditingBlockTypeState('');
-    wysiwygLoadedBlockRef.current = null;
-    showToast('Bloco atualizado');
-  };
-
-  const cancelEditBlock = () => {
-    if (editorHistoryTimerRef.current) {
-      window.clearTimeout(editorHistoryTimerRef.current);
-      editorHistoryTimerRef.current = null;
-    }
-    setShowBlockEditor(false);
-    setEditingBlockIdState(null);
-    setEditingBlockHtmlState('');
-    setEditingBlockTypeState('');
-    wysiwygLoadedBlockRef.current = null;
-  };
-  const activeLesson = getActiveLesson();
-
-  useEffect(() => {
-    // Adjust title textarea height when active lesson or its title changes
-    const el = titleInputRef.current;
-    if (!el) return;
-    // allow browser to compute proper scrollHeight
-    el.style.height = 'auto';
-    // set to scrollHeight (plus small padding) to ensure no clipping
-    el.style.height = `${Math.max(32, el.scrollHeight)}px`;
-  }, [activeLesson?.title, activeLesson?.id]);
-
-  // Populate WYSIWYG editor with block content when the block editor modal opens
-  useEffect(() => {
-    if (!showBlockEditor || !editingBlockIdState) return;
-    // Use rAF so the DOM has rendered the contentEditable div before writing to it
-    const raf = requestAnimationFrame(() => {
-      if (wysiwygRef.current && wysiwygLoadedBlockRef.current !== editingBlockIdState) {
-        wysiwygRef.current.innerHTML = editingBlockHtmlState;
-        wysiwygLoadedBlockRef.current = editingBlockIdState;
-        // Move cursor to end
-        const range = document.createRange();
-        range.selectNodeContents(wysiwygRef.current);
-        range.collapse(false);
-        const sel = window.getSelection();
-        if (sel) { sel.removeAllRanges(); sel.addRange(range); }
-      }
-    });
-    return () => cancelAnimationFrame(raf);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBlockEditor, editingBlockIdState]);
 
   if (loading) {
     return (
@@ -1992,7 +745,7 @@ export default function TrilhaBuilder() {
           </button>
           <div className="flex items-center gap-2">
             <input
-              className="text-sm font-bold text-slate-700 uppercase tracking-wider bg-transparent outline-none w-64"
+              className="text-sm font-bold text-slate-700 bg-transparent outline-none w-64"
               value={trailData.title}
               placeholder="Nova Trilha"
               draggable
@@ -2016,7 +769,7 @@ export default function TrilhaBuilder() {
           </div>
         </div>
 
-          <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3">
           {/* Auto-save status */}
           <div className="flex items-center gap-2 px-3 py-1 bg-slate-50 rounded-full border border-slate-100">
             {isDirty ? (
@@ -2040,7 +793,7 @@ export default function TrilhaBuilder() {
               ⚠ Restaurar backup local
             </button>
           )}
-          <button 
+          <button
             onClick={applyFaktoryOneTemplate}
             className="px-3 py-1.5 text-[10px] font-bold text-faktory-blue border border-faktory-blue rounded hover:bg-blue-50 transition-all flex items-center gap-2"
           >
@@ -2075,7 +828,7 @@ export default function TrilhaBuilder() {
               </div>
             )}
           </div>
-          <button 
+          <button
             onClick={handleSave}
             disabled={saving}
             className="px-6 py-1.5 bg-faktory-blue text-white rounded font-bold text-xs hover:bg-[#2c6a9a] transition-all flex items-center gap-2 disabled:opacity-50"
@@ -2097,7 +850,7 @@ export default function TrilhaBuilder() {
         {/* Left Sidebar - Structure */}
         <aside className="w-72 bg-white border-r border-slate-200 flex flex-col shrink-0">
           <div className="p-4 border-b border-slate-100">
-            <button 
+            <button
               onClick={addModule}
               className="w-full py-2 bg-[#99b300] hover:bg-[#88a000] text-white rounded font-bold text-xs flex items-center justify-center gap-2 transition-all"
             >
@@ -2108,12 +861,12 @@ export default function TrilhaBuilder() {
 
           <div className="flex-1 overflow-y-auto p-2 space-y-2">
             {trailData.modules.length === 0 ? (
-                <div className="p-4 bg-yellow-50 border border-yellow-100 rounded text-sm text-slate-700">
-                  <div className="font-bold mb-2">Nenhuma etapa encontrada</div>
-                  <div className="text-[13px] mb-3">Use o botão "Adicionar módulo" acima para criar um novo módulo.</div>
-                </div>
+              <div className="p-4 bg-yellow-50 border border-yellow-100 rounded text-sm text-slate-700">
+                <div className="font-bold mb-2">Nenhuma etapa encontrada</div>
+                <div className="text-[13px] mb-3">Use o botão "Adicionar módulo" acima para criar um novo módulo.</div>
+              </div>
             ) : (
-            trailData.modules.map((module, mIndex) => renderModule(module, 0, mIndex))
+              trailData.modules.map((module, mIndex) => renderModule(module, 0, mIndex))
             )}
           </div>
         </aside>
@@ -2122,18 +875,18 @@ export default function TrilhaBuilder() {
         <main className="flex-1 bg-[#f4f7f9] overflow-y-auto p-10 relative">
           <div className="max-w-4xl mx-auto bg-white shadow-2xl rounded-sm min-h-[800px] flex flex-col border border-slate-200">
             {/* Preview Header */}
-                  <div className="p-10 flex flex-col items-center border-b border-slate-50"
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      const file = e.dataTransfer?.files?.[0];
-                      if (file && file.type && file.type.startsWith('image/')) {
-                        handleImageFile(file);
-                        return;
-                      }
-                      if (dragVideoRef.current) { setVideoPosition('title-top'); dragVideoRef.current = false; showToast('Vídeo movido acima do título'); }
-                    }}
-                  >
+            <div className="p-10 flex flex-col items-center border-b border-slate-50"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer?.files?.[0];
+                if (file && file.type && file.type.startsWith('image/')) {
+                  handleImageFile(file);
+                  return;
+                }
+                if (dragVideoRef.current) { setVideoPosition('title-top'); dragVideoRef.current = false; showToast('Vídeo movido acima do título'); }
+              }}
+            >
               <div className="w-64 mb-10"
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -2143,13 +896,13 @@ export default function TrilhaBuilder() {
                 onDrop={(e) => {
                   e.preventDefault();
                   const file = e.dataTransfer?.files?.[0];
-                      if (dragImageRef.current) {
+                  if (dragImageRef.current) {
                     if (!activeLesson) {
                       showToast('Selecione uma aula para mover a imagem');
                     } else {
                       const imgSrc = dragImageRef.current;
-                          const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
-                          updateLesson({ content: (activeLesson.content || '') + '\n' + block, imageUrl: '' });
+                      const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
+                      updateLesson({ content: (activeLesson.content || '') + '\n' + block, imageUrl: '' });
                       showToast('Imagem movida para o conteúdo');
                     }
                     dragImageRef.current = null;
@@ -2270,7 +1023,7 @@ export default function TrilhaBuilder() {
                     {dragPreview.type === 'title' && (dragVideoRef.current || dragBlockIdRef.current) ? (
                       <div className="p-4 mb-4 border-2 border-dashed border-faktory-blue rounded bg-white/60 text-center">Pré-visualização de inserção</div>
                     ) : (
-                      <div 
+                      <div
                         onClick={() => setShowVideoModal(true)}
                         onMouseEnter={(e) => {
                           const el = e.currentTarget as HTMLDivElement;
@@ -2305,7 +1058,7 @@ export default function TrilhaBuilder() {
               )}
 
               {activeLesson ? (
-                  <div className="flex items-center gap-2 w-full justify-center min-w-0" onMouseEnter={() => setTitleHovered(true)} onMouseLeave={() => setTitleHovered(false)}>
+                <div className="flex items-center gap-2 w-full justify-center min-w-0" onMouseEnter={() => setTitleHovered(true)} onMouseLeave={() => setTitleHovered(false)}>
                   <div
                     draggable
                     onDragStart={(e) => { dragTitleRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
@@ -2316,24 +1069,24 @@ export default function TrilhaBuilder() {
                     <GripVertical size={18} />
                   </div>
 
-                    <div className={`flex flex-col flex-1 min-w-0 relative ${titleHovered || (showBlockEditor && editingBlockTypeState === 'title') ? 'bg-white rounded border border-faktory-blue/30 shadow-sm p-3 ring-1 ring-faktory-blue/10' : ''}`}>
-                    {(titleHovered || (showBlockEditor && editingBlockTypeState === 'title')) && (
+                  <div className={`flex flex-col flex-1 min-w-0 relative ${titleHovered || (showBlockEditor && editingBlockType === 'title') ? 'bg-white rounded border border-faktory-blue/30 shadow-sm p-3 ring-1 ring-faktory-blue/10' : ''}`}>
+                    {(titleHovered || (showBlockEditor && editingBlockType === 'title')) && (
                       <div className="absolute -top-3 left-3">
                         <div className="inline-flex items-center gap-2 bg-faktory-blue text-white text-[11px] font-bold px-2 py-1 rounded">Título</div>
                       </div>
                     )}
-                    {(titleHovered || (showBlockEditor && editingBlockTypeState === 'title')) && (
+                    {(titleHovered || (showBlockEditor && editingBlockType === 'title')) && (
                       <div className="flex items-center gap-2 justify-center mb-2">
-                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('bold'); }} title="Negrito">B</button>
-                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('italic'); }} title="Itálico">I</button>
-                      <select className="px-2 py-1 rounded border" onChange={(e)=>{ e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount===0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="font-family:${val}">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} defaultValue="">Fonte</select>
-                      <select className="px-2 py-1 rounded border" onChange={(e)=>{ e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount===0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="font-size:${val}px">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} defaultValue="">Tamanho</select>
-                      <input type="color" className="w-8 h-8 p-0 border rounded" onChange={(e)=>{ e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount===0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="color:${val}">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} title="Cor da fonte" />
-                      <div className="ml-2" />
-                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('justifyLeft'); }} title="Alinhar esquerda">L</button>
-                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('justifyCenter'); }} title="Centralizar">C</button>
-                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('justifyRight'); }} title="Alinhar direita">R</button>
-                      <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e)=>{ e.preventDefault(); document.execCommand('justifyFull'); }} title="Justificar">J</button>
+                        <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e) => { e.preventDefault(); document.execCommand('bold'); }} title="Negrito">B</button>
+                        <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e) => { e.preventDefault(); document.execCommand('italic'); }} title="Itálico">I</button>
+                        <select className="px-2 py-1 rounded border" onChange={(e) => { e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount === 0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="font-family:${val}">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} defaultValue="">Fonte</select>
+                        <select className="px-2 py-1 rounded border" onChange={(e) => { e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount === 0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="font-size:${val}px">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} defaultValue="">Tamanho</select>
+                        <input type="color" className="w-8 h-8 p-0 border rounded" onChange={(e) => { e.preventDefault(); const val = e.target.value; const sel = window.getSelection(); if (!sel || sel.rangeCount === 0) return; const range = sel.getRangeAt(0); const frag = range.cloneContents(); const div = document.createElement('div'); div.appendChild(frag); const inner = div.innerHTML || sel.toString(); const span = `<span style="color:${val}">${inner}</span>`; range.deleteContents(); range.insertNode(document.createRange().createContextualFragment(span)); }} title="Cor da fonte" />
+                        <div className="ml-2" />
+                        <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e) => { e.preventDefault(); document.execCommand('justifyLeft'); }} title="Alinhar esquerda">L</button>
+                        <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e) => { e.preventDefault(); document.execCommand('justifyCenter'); }} title="Centralizar">C</button>
+                        <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e) => { e.preventDefault(); document.execCommand('justifyRight'); }} title="Alinhar direita">R</button>
+                        <button type="button" className="px-2 py-1 rounded border" onMouseDown={(e) => { e.preventDefault(); document.execCommand('justifyFull'); }} title="Justificar">J</button>
                       </div>
                     )}
 
@@ -2343,12 +1096,12 @@ export default function TrilhaBuilder() {
                       suppressContentEditableWarning
                       className="text-3xl font-bold text-slate-700 text-center flex-1 min-w-0 w-full outline-none focus:border-b-2 border-faktory-blue pb-2 resize-none bg-transparent"
                       onInput={() => {
-                        const el = titleInputRef.current as HTMLDivElement | null;
+                        const el = titleInputRef.current as unknown as HTMLDivElement | null;
                         if (!el) return;
                         // auto-resize handled by flow; ensure no excessive height
                       }}
                       onBlur={() => {
-                        const el = titleInputRef.current as HTMLDivElement | null;
+                        const el = titleInputRef.current as unknown as HTMLDivElement | null;
                         if (!el) return;
                         const html = el.innerHTML;
                         const text = el.textContent || '';
@@ -2364,379 +1117,254 @@ export default function TrilhaBuilder() {
             </div>
 
             {/* Preview Content */}
-              <div className="flex-1 p-10 space-y-8"
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  if (dragVideoRef.current || dragBlockIdRef.current) setDragPreview({ type: 'content' });
-                }}
-                onDragLeave={() => { setDragPreview({ type: 'none' }); }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const file = e.dataTransfer?.files?.[0];
-                  if (dragImageRef.current) {
-                    if (!activeLesson) {
-                      showToast('Selecione uma aula para mover a imagem');
-                    } else {
-                      const imgSrc = dragImageRef.current;
-                      const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
-                      updateLesson({ content: (activeLesson.content || '') + '\n' + block, imageUrl: '' });
-                      showToast('Imagem movida para o conteúdo');
-                    }
-                    dragImageRef.current = null;
-                    setDragPreview({ type: 'none' });
-                    return;
+            <div className="flex-1 p-10 space-y-8"
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (dragVideoRef.current || dragBlockIdRef.current) setDragPreview({ type: 'content' });
+              }}
+              onDragLeave={() => { setDragPreview({ type: 'none' }); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer?.files?.[0];
+                if (dragImageRef.current) {
+                  if (!activeLesson) {
+                    showToast('Selecione uma aula para mover a imagem');
+                  } else {
+                    const imgSrc = dragImageRef.current;
+                    const block = genBlock(`<img src=\"${imgSrc}\" alt=\\\"Imagem da aula\\\" />`, 'image');
+                    updateLesson({ content: (activeLesson.content || '') + '\n' + block, imageUrl: '' });
+                    showToast('Imagem movida para o conteúdo');
                   }
-                  if (file && file.type && file.type.startsWith('image/')) {
-                    handleImageFile(file);
-                    return;
-                  }
-                  if (dragVideoRef.current) {
-                    if (activeLesson && activeLesson.videoUrl) {
-                      const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
-                      const videoHtml = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
-                      const block = genBlock(videoHtml, 'video');
-                      updateLesson({ content: (activeLesson.content || '') + '\n' + block, videoUrl: '' });
-                      showToast('Vídeo movido para o conteúdo');
-                    } else {
-                      setVideoPosition('top');
-                      showToast('Vídeo movido acima do conteúdo');
-                    }
-                    dragVideoRef.current = false;
-                  }
-                  if (dragTitleRef.current && activeLesson) {
-                    const titleHtml = getActiveLessonTitleHtml();
-                    const block = genBlock(titleHtml, 'title');
-                    updateLesson({ content: (activeLesson.content || '') + '\n' + block, title: '' } as any);
-                    dragTitleRef.current = false;
-                    showToast('Título movido para o conteúdo');
-                  }
-                  if (dragPageTitleRef.current) {
-                    if (!activeLesson) {
-                      showToast('Selecione uma aula para mover o título da página');
-                    } else {
-                      const block = genBlock(`<h2>${trailData.title}</h2>`, 'title');
-                      updateLesson({ content: (activeLesson.content || '') + '\n' + block });
-                      setTrailData(prev => ({ ...prev, title: '' }));
-                      showToast('Título da página movido para o conteúdo');
-                    }
-                    dragPageTitleRef.current = false;
-                  }
-                  if (dragBlockIdRef.current) { const dragId = dragBlockIdRef.current; const blocks = parseBlocks(activeLesson?.content || ''); if (blocks.length) reorderBlock(dragId, blocks[0].id); dragBlockIdRef.current = null; }
+                  dragImageRef.current = null;
                   setDragPreview({ type: 'none' });
-                }}
-              >
+                  return;
+                }
+                if (file && file.type && file.type.startsWith('image/')) {
+                  handleImageFile(file);
+                  return;
+                }
+                if (dragVideoRef.current) {
+                  if (activeLesson && activeLesson.videoUrl) {
+                    const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
+                    const videoHtml = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
+                    const block = genBlock(videoHtml, 'video');
+                    updateLesson({ content: (activeLesson.content || '') + '\n' + block, videoUrl: '' });
+                    showToast('Vídeo movido para o conteúdo');
+                  } else {
+                    setVideoPosition('top');
+                    showToast('Vídeo movido acima do conteúdo');
+                  }
+                  dragVideoRef.current = false;
+                }
+                if (dragTitleRef.current && activeLesson) {
+                  const titleHtml = getActiveLessonTitleHtml();
+                  const block = genBlock(titleHtml, 'title');
+                  updateLesson({ content: (activeLesson.content || '') + '\n' + block, title: '' } as any);
+                  dragTitleRef.current = false;
+                  showToast('Título movido para o conteúdo');
+                }
+                if (dragPageTitleRef.current) {
+                  if (!activeLesson) {
+                    showToast('Selecione uma aula para mover o título da página');
+                  } else {
+                    const block = genBlock(`<h2>${trailData.title}</h2>`, 'title');
+                    updateLesson({ content: (activeLesson.content || '') + '\n' + block });
+                    setTrailData(prev => ({ ...prev, title: '' }));
+                    showToast('Título da página movido para o conteúdo');
+                  }
+                  dragPageTitleRef.current = false;
+                }
+                if (dragBlockIdRef.current) { const dragId = dragBlockIdRef.current; const blocks = parseBlocks(activeLesson?.content || ''); if (blocks.length) reorderBlock(dragId, blocks[0].id); dragBlockIdRef.current = null; }
+                setDragPreview({ type: 'none' });
+              }}
+            >
               {activeLesson && (
                 <>
                   {/* Video Placeholder */}
                   {(activeLesson.videoPosition !== 'title-top' && activeLesson.videoPosition !== 'bottom') && activeLesson.videoUrl && (
-                      <div 
-                        draggable
-                        onDragStart={(e) => { dragVideoRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
-                        onDragEnd={() => { dragVideoRef.current = false; }}
-                        onClick={() => setShowVideoModal(true)}
-                        onMouseEnter={(e) => {
-                          const el = e.currentTarget as HTMLDivElement;
-                          const container = previewAreaRef.current || blocksAreaRef.current || document.body;
-                          const rect = el.getBoundingClientRect();
-                          const containerRect = (container as HTMLElement).getBoundingClientRect ? (container as HTMLElement).getBoundingClientRect() : { top: 0, left: 0 };
-                          const relTop = rect.top - containerRect.top + (container as HTMLElement).scrollTop || 0;
-                          const relLeft = rect.left - containerRect.left + (container as HTMLElement).scrollLeft || 0;
-                          setDragPreview({ type: 'block', id: 'video-main', rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height }, source: 'preview' });
-                        }}
-                        onMouseMove={(e) => {
-                          const el = e.currentTarget as HTMLDivElement;
-                          const rect = el.getBoundingClientRect();
-                          const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
-                          setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === 'video-main' ? prev : { type: 'block', id: 'video-main' }), pos, source: 'preview' }));
-                        }}
-                        onMouseLeave={() => { if (!dragVideoRef.current) setDragPreview({ type: 'none' }); }}
-                        className="aspect-video bg-slate-900 rounded-sm flex flex-col items-center justify-center text-white relative group overflow-hidden cursor-pointer border-2 border-transparent hover:border-faktory-blue transition-all"
-                      >
-                        {activeLesson.videoUrl ? (
-                          <div className="w-full h-full relative">
-                            <iframe 
-                              src={getEmbedUrl(activeLesson.videoUrl)} 
-                              className="w-full h-full pointer-events-none"
-                              title="Video Preview"
-                            />
-                            <div className="absolute top-3 right-3 flex gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button onClick={(e) => { e.stopPropagation(); setVideoPosition('title-top'); }} title="Acima do título" className="bg-white/10 text-white p-2 rounded"> <ChevronUp size={14} /> </button>
-                              <button onClick={(e) => { e.stopPropagation(); setVideoPosition('top'); }} title="Acima do conteúdo" className="bg-white/10 text-white p-2 rounded"> <ChevronUp size={14} /> </button>
-                              <button onClick={(e) => { e.stopPropagation(); setVideoPosition('bottom'); }} title="Abaixo do conteúdo" className="bg-white/10 text-white p-2 rounded"> <ChevronDown size={14} /> </button>
-                              <button onClick={(e) => { e.stopPropagation(); insertVideoAsBlock(); }} title="Inserir como bloco" className="bg-white/10 text-white p-2 rounded"> <Layers size={14} /> </button>
-                              <button onClick={(e) => { e.stopPropagation(); updateLesson({ videoUrl: '' }); showToast('Vídeo removido'); }} title="Remover vídeo" className="bg-white/10 text-white p-2 rounded"> <Trash2 size={14} /> </button>
-                            </div>
-                            <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-all flex items-center justify-center">
-                              <div className="bg-white/10 backdrop-blur-md p-4 rounded-full border border-white/20 opacity-0 group-hover:opacity-100 transition-all">
-                                <Settings className="text-white" size={32} />
-                              </div>
-                            </div>
-                            <div className="absolute bottom-4 left-4 flex gap-2">
-                              {activeLesson.videoOptions?.subtitlesUrl && (
-                                <span className="bg-faktory-blue text-white text-[10px] font-bold px-2 py-1 rounded">Legenda Ativa</span>
-                              )}
-                              {activeLesson.videoOptions?.autoplay && (
-                                <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded">Autoplay</span>
-                              )}
+                    <div
+                      draggable
+                      onDragStart={(e) => { dragVideoRef.current = true; e.dataTransfer.effectAllowed = 'move'; }}
+                      onDragEnd={() => { dragVideoRef.current = false; }}
+                      onClick={() => setShowVideoModal(true)}
+                      onMouseEnter={(e) => {
+                        const el = e.currentTarget as HTMLDivElement;
+                        const container = previewAreaRef.current || blocksAreaRef.current || document.body;
+                        const rect = el.getBoundingClientRect();
+                        const containerRect = (container as HTMLElement).getBoundingClientRect ? (container as HTMLElement).getBoundingClientRect() : { top: 0, left: 0 };
+                        const relTop = rect.top - containerRect.top + (container as HTMLElement).scrollTop || 0;
+                        const relLeft = rect.left - containerRect.left + (container as HTMLElement).scrollLeft || 0;
+                        setDragPreview({ type: 'block', id: 'video-main', rect: { top: relTop, left: relLeft, width: rect.width, height: rect.height }, source: 'preview' });
+                      }}
+                      onMouseMove={(e) => {
+                        const el = e.currentTarget as HTMLDivElement;
+                        const rect = el.getBoundingClientRect();
+                        const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
+                        setDragPreview(prev => ({ ...(prev.type === 'block' && prev.id === 'video-main' ? prev : { type: 'block', id: 'video-main' }), pos, source: 'preview' }));
+                      }}
+                      onMouseLeave={() => { if (!dragVideoRef.current) setDragPreview({ type: 'none' }); }}
+                      className="aspect-video bg-slate-900 rounded-sm flex flex-col items-center justify-center text-white relative group overflow-hidden cursor-pointer border-2 border-transparent hover:border-faktory-blue transition-all"
+                    >
+                      {activeLesson.videoUrl ? (
+                        <div className="w-full h-full relative">
+                          <iframe
+                            src={getEmbedUrl(activeLesson.videoUrl)}
+                            className="w-full h-full pointer-events-none"
+                            title="Video Preview"
+                          />
+                          <div className="absolute top-3 right-3 flex gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={(e) => { e.stopPropagation(); setVideoPosition('title-top'); }} title="Acima do título" className="bg-white/10 text-white p-2 rounded"> <ChevronUp size={14} /> </button>
+                            <button onClick={(e) => { e.stopPropagation(); setVideoPosition('top'); }} title="Acima do conteúdo" className="bg-white/10 text-white p-2 rounded"> <ChevronUp size={14} /> </button>
+                            <button onClick={(e) => { e.stopPropagation(); setVideoPosition('bottom'); }} title="Abaixo do conteúdo" className="bg-white/10 text-white p-2 rounded"> <ChevronDown size={14} /> </button>
+                            <button onClick={(e) => { e.stopPropagation(); insertVideoAsBlock(); }} title="Inserir como bloco" className="bg-white/10 text-white p-2 rounded"> <Layers size={14} /> </button>
+                            <button onClick={(e) => { e.stopPropagation(); updateLesson({ videoUrl: '' }); showToast('Vídeo removido'); }} title="Remover vídeo" className="bg-white/10 text-white p-2 rounded"> <Trash2 size={14} /> </button>
+                          </div>
+                          <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-all flex items-center justify-center">
+                            <div className="bg-white/10 backdrop-blur-md p-4 rounded-full border border-white/20 opacity-0 group-hover:opacity-100 transition-all">
+                              <Settings className="text-white" size={32} />
                             </div>
                           </div>
-                        ) : (
-                          <>
-                            <Video size={48} className="text-slate-700 mb-4" />
-                            <p className="text-sm font-bold text-slate-500">Clique para configurar o vídeo</p>
-                          </>
-                        )}
-                      </div>
+                          <div className="absolute bottom-4 left-4 flex gap-2">
+                            {activeLesson.videoOptions?.subtitlesUrl && (
+                              <span className="bg-faktory-blue text-white text-[10px] font-bold px-2 py-1 rounded">Legenda Ativa</span>
+                            )}
+                            {activeLesson.videoOptions?.autoplay && (
+                              <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded">Autoplay</span>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <Video size={48} className="text-slate-700 mb-4" />
+                          <p className="text-sm font-bold text-slate-500">Clique para configurar o vídeo</p>
+                        </>
+                      )}
+                    </div>
                   )}
 
-                  {/* Blocos da aula — área de conteúdo principal */}
-                  <div className="prose prose-slate max-w-none">
-                    {dragPreview.type === 'content' && (dragVideoRef.current || dragBlockIdRef.current) && (
-                      <div className="mb-4 p-4 border-2 border-dashed border-faktory-blue rounded bg-white/60 text-center">Solte aqui para inserir</div>
-                    )}
-                    <div ref={blocksAreaRef} />
-                    <div ref={previewAreaRef} className="space-y-1 relative min-h-[120px]">
-                        {parseBlocks(activeLesson?.content || '').sort((a,b) => a.index - b.index).map((b: any) => (
-                          <div key={b.id} className="relative">
-                            {/* ── Linha de inserção ANTES ── */}
-                            {dragPreview.type === 'block' && dragPreview.id === b.id && dragPreview.pos === 'before' && dragPreview.source === 'preview' && (
-                              <div className="pointer-events-none absolute -top-1 left-0 right-0 h-1 bg-faktory-blue rounded z-50" />
-                            )}
-                            <div
-                              ref={(el) => { blockRefs.current[b.id] = el; }}
-                              className={`relative rounded-lg border transition-all bg-white ${
-                                dragPreview.type === 'block' && dragPreview.id === b.id && dragPreview.source === 'preview'
-                                  ? 'border-faktory-blue/40 shadow-md'
-                                  : hoveredBlockId === b.id
-                                    ? 'border-faktory-blue/50 shadow-sm'
-                                    : 'border-transparent'
-                              }`}
-                              draggable
-                              onDragStart={(e) => { dragBlockIdRef.current = b.id; e.dataTransfer.effectAllowed = 'move'; }}
-                              onDragEnd={() => { dragBlockIdRef.current = null; }}
-                              onDragOver={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                const el = blockRefs.current[b.id];
-                                if (el) {
-                                  const rect = el.getBoundingClientRect();
-                                  const pos = (e.clientY - rect.top) < (rect.height / 2) ? 'before' : 'after';
-                                  setDragPreview({ type: 'block', id: b.id, pos, source: 'preview' });
-                                }
-                              }}
-                              onDragLeave={(e) => {
-                                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                                  setDragPreview({ type: 'none' });
-                                }
-                              }}
-                              onMouseEnter={() => { if (!dragBlockIdRef.current) setHoveredBlockId(b.id); }}
-                              onMouseLeave={() => { setHoveredBlockId(null); if (!dragBlockIdRef.current) setDragPreview({ type: 'none' }); }}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                const pos = dragPreview.pos || 'before';
-                                const dragId = dragBlockIdRef.current;
-                                const insertBlock = (newBlock: string) => {
-                                  const content = activeLesson!.content || '';
-                                  const parsed = parseBlocks(content).sort((a: any, bx: any) => a.index - bx.index);
-                                  const idx = parsed.findIndex((x: any) => x.id === b.id);
-                                  const parts: string[] = [];
-                                  let last = 0;
-                                  for (const bl of parsed) {
-                                    parts.push(content.slice(last, bl.index));
-                                    parts.push(content.slice(bl.index, bl.index + bl.length));
-                                    last = bl.index + bl.length;
-                                  }
-                                  parts.push(content.slice(last));
-                                  parts.splice(pos === 'before' ? (idx * 2) : (idx * 2 + 2), 0, newBlock);
-                                  return parts.join('');
-                                };
-                                if (dragTitleRef.current && activeLesson) {
-                                  const titleHtml = getActiveLessonTitleHtml();
-                                  const block = genBlock(titleHtml, 'title');
-                                  updateLesson({ content: insertBlock(block), title: '' } as any);
-                                  dragTitleRef.current = false;
-                                  setDragPreview({ type: 'none' });
-                                  showToast('Título movido para o conteúdo');
-                                  return;
-                                }
-                                if (dragVideoRef.current && activeLesson?.videoUrl) {
-                                  const embed = getEmbedUrl(activeLesson.videoUrl) || activeLesson.videoUrl;
-                                  const videoHtml = `<div class="embed"><iframe src="${embed}" width="100%" height="450" frameborder="0" allowfullscreen></iframe></div>`;
-                                  const videoBlock = genBlock(videoHtml, 'video');
-                                  updateLesson({ content: insertBlock(videoBlock), videoUrl: '' });
-                                  dragVideoRef.current = false;
-                                  setDragPreview({ type: 'none' });
-                                  showToast('Vídeo inserido como bloco');
-                                  return;
-                                }
-                                if (dragId && dragId !== b.id) reorderBlockTo(dragId, b.id, pos);
-                                dragBlockIdRef.current = null;
-                                setDragPreview({ type: 'none' });
-                              }}
-                            >
-                              {/* ── Toolbar overlay — aparece ao passar o mouse ── */}
-                              {hoveredBlockId === b.id && (
-                                <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
-                                  <div
-                                    className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-grab select-none"
-                                    title="Arrastar bloco"
-                                  >
-                                    <GripVertical size={11} />
-                                    {b.type === 'custom' ? 'Texto/HTML' :
-                                     b.type === 'title' ? 'Título' :
-                                     b.type === 'image' ? 'Imagem' :
-                                     b.type === 'video' ? 'Vídeo' :
-                                     b.type === 'highlight' ? 'Destaque' :
-                                     b.type === 'group' ? 'Grupo' :
-                                     b.type === 'embed' ? 'Embed' :
-                                     b.type === 'logo' ? 'Logo' :
-                                     b.type}
-                                  </div>
-                                  <div className="flex items-center gap-0.5">
-                                    <button onClick={(e) => { e.stopPropagation(); editBlockById(b.id); }} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors" title="Editar"><Pencil size={13} /></button>
-                                    <button onClick={(e) => { e.stopPropagation(); duplicateBlockById(b.id); }} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors" title="Duplicar"><Copy size={13} /></button>
-                                    <div className="w-px h-4 bg-slate-200 mx-0.5" />
-                                    <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, -1); }} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors" title="Mover para cima"><ChevronUp size={13} /></button>
-                                    <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, 1); }} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors" title="Mover para baixo"><ChevronDown size={13} /></button>
-                                    <div className="w-px h-4 bg-slate-200 mx-0.5" />
-                                    <button onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }} className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors" title="Remover"><Trash2 size={13} /></button>
-                                  </div>
-                                </div>
-                              )}
-                              {/* ── Conteúdo do bloco ── */}
-                              <div
-                                className={`relative ${hoveredBlockId === b.id ? 'pt-8' : ''} cursor-pointer`}
-                                onDoubleClick={(e) => { e.stopPropagation(); editBlockById(b.id); }}
-                                title="Duplo clique para editar"
-                              >
-                                <div className="p-4 pointer-events-none rich-text-content" dangerouslySetInnerHTML={{ __html: b.html }} />
-                              </div>
-                            </div>
-                            {/* ── Linha de inserção DEPOIS ── */}
-                            {dragPreview.type === 'block' && dragPreview.id === b.id && dragPreview.pos === 'after' && dragPreview.source === 'preview' && (
-                              <div className="pointer-events-none absolute -bottom-1 left-0 right-0 h-1 bg-faktory-blue rounded z-50" />
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                  </div>
+                  {/* Blocos da aula — área de conteúdo principal (agora usa ContentArea extraído) */}
+                  <ContentArea 
+                    activeLesson={activeLesson} 
+                    updateLesson={updateLesson} 
+                    showToast={showToast} 
+                    blockEditor={blockEditor}
+                  />
 
                   {/* Quiz Section */}
                   {activeLesson.quiz ? (
-                  <div className="mt-10 pt-10 border-t border-slate-100">
-                    {/* === Bloco CTA — "Fazer questionário" === */}
-                    <div
-                      className={`group relative rounded-lg border transition-all bg-white mb-6 ${hoveredBlockId === '__quiz_cta__' ? 'border-faktory-blue/50 shadow-sm' : 'border-slate-200'}`}
-                      onMouseEnter={() => setHoveredBlockId('__quiz_cta__')}
-                      onMouseLeave={() => setHoveredBlockId(null)}
-                    >
-                      {hoveredBlockId === '__quiz_cta__' && (
-                        <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
-                          <div className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded select-none">
-                            <HelpCircle size={11} />
-                            Botão — Fazer Questionário
-                          </div>
-                          <div className="flex items-center gap-0.5">
-                            <button
-                              onClick={() => updateLesson({ quiz: undefined })}
-                              className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
-                              title="Remover questionário"
-                            ><Trash2 size={13} /></button>
-                          </div>
-                        </div>
-                      )}
-                      <div className={`p-6 flex flex-col items-center gap-3 ${hoveredBlockId === '__quiz_cta__' ? 'pt-10' : ''}`}>
-                        <p className="text-sm text-slate-500 text-center">O questionário de fixação será exibido ao aluno após clicar no botão abaixo:</p>
-                        <button className="px-6 py-2.5 bg-faktory-blue text-white rounded-lg font-bold text-sm pointer-events-none select-none shadow">
-                          Fazer questionário
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* === Bloco de edição do quiz === */}
-                    <div
-                      className={`group relative rounded-lg border transition-all bg-white ${hoveredBlockId === '__quiz__' ? 'border-faktory-blue/50 shadow-sm' : 'border-slate-200'}`}
-                      onMouseEnter={() => setHoveredBlockId('__quiz__')}
-                      onMouseLeave={() => setHoveredBlockId(null)}
-                    >
-                      {hoveredBlockId === '__quiz__' && (
-                        <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
-                          <div className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded select-none">
-                            <HelpCircle size={11} />
-                            Questionário de Fixação
-                          </div>
-                          <div className="flex items-center gap-0.5">
-                            <button
-                              onClick={() => {
-                                const opts = [...(activeLesson.quiz?.options || []), ''];
-                                updateLesson({ quiz: { ...activeLesson.quiz!, options: opts } });
-                              }}
-                              className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
-                              title="Adicionar opção"
-                            ><Plus size={13} /></button>
-                            <button
-                              onClick={() => updateLesson({ quiz: undefined })}
-                              className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
-                              title="Remover questionário"
-                            ><Trash2 size={13} /></button>
-                          </div>
-                        </div>
-                      )}
-                      <div className={`p-6 space-y-4 ${hoveredBlockId === '__quiz__' ? 'pt-10' : ''}`}>
-                        <input
-                          className="w-full p-3 bg-white border border-slate-200 rounded-md font-bold text-slate-600 outline-none focus:border-faktory-blue"
-                          placeholder="Digite a pergunta do questionário..."
-                          value={activeLesson.quiz?.question}
-                          onChange={(e) => updateLesson({ quiz: { ...activeLesson.quiz!, question: e.target.value } })}
-                        />
-                        <div className="space-y-2">
-                          {activeLesson.quiz?.options.map((option, idx) => (
-                            <div key={idx} className="flex items-center gap-2 bg-slate-50 p-3 rounded-md border border-slate-100 group/opt">
-                              <input
-                                type="radio"
-                                checked={activeLesson.quiz?.correctIndex === idx}
-                                onChange={() => updateLesson({ quiz: { ...activeLesson.quiz!, correctIndex: idx } })}
-                                title="Marcar como resposta correta"
-                              />
-                              <input
-                                className="bg-transparent text-sm w-full outline-none"
-                                value={option}
-                                onChange={(e) => {
-                                  const newOptions = [...activeLesson.quiz!.options];
-                                  newOptions[idx] = e.target.value;
-                                  updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions } });
-                                }}
-                                placeholder={`Opção ${idx + 1}`}
-                              />
-                              {(activeLesson.quiz?.options.length ?? 0) > 2 && (
-                                <button
-                                  onClick={() => {
-                                    const newOptions = activeLesson.quiz!.options.filter((_, i) => i !== idx);
-                                    const correctIndex = activeLesson.quiz!.correctIndex >= newOptions.length ? 0 : activeLesson.quiz!.correctIndex;
-                                    updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions, correctIndex } });
-                                  }}
-                                  className="opacity-0 group-hover/opt:opacity-100 p-1 text-slate-300 hover:text-red-500 transition-all"
-                                  title="Remover opção"
-                                ><Trash2 size={12} /></button>
-                              )}
+                    <div className="mt-10 pt-10 border-t border-slate-100">
+                      {/* === Bloco CTA — "Fazer questionário" === */}
+                      <div
+                        className={`group relative rounded-lg border transition-all bg-white mb-6 ${hoveredBlockId === '__quiz_cta__' ? 'border-faktory-blue/50 shadow-sm' : 'border-slate-200'}`}
+                        onMouseEnter={() => setHoveredBlockId('__quiz_cta__')}
+                        onMouseLeave={() => setHoveredBlockId(null)}
+                      >
+                        {hoveredBlockId === '__quiz_cta__' && (
+                          <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
+                            <div className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded select-none">
+                              <HelpCircle size={11} />
+                              Botão — Fazer Questionário
                             </div>
-                          ))}
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                onClick={() => updateLesson({ quiz: undefined })}
+                                className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
+                                title="Remover questionário"
+                              ><Trash2 size={13} /></button>
+                            </div>
+                          </div>
+                        )}
+                        <div className={`p-6 flex flex-col items-center gap-3 ${hoveredBlockId === '__quiz_cta__' ? 'pt-10' : ''}`}>
+                          <p className="text-sm text-slate-500 text-center">O questionário de fixação será exibido ao aluno após clicar no botão abaixo:</p>
+                          <button className="px-6 py-2.5 bg-faktory-blue text-white rounded-lg font-bold text-sm pointer-events-none select-none shadow">
+                            Fazer questionário
+                          </button>
                         </div>
-                        <p className="text-[10px] text-slate-400">Selecione o rádio ao lado da opção correta. Passe o mouse sobre uma opção para removê-la.</p>
+                      </div>
+
+                      {/* === Bloco de edição do quiz === */}
+                      <div
+                        className={`group relative rounded-lg border transition-all bg-white ${hoveredBlockId === '__quiz__' ? 'border-faktory-blue/50 shadow-sm' : 'border-slate-200'}`}
+                        onMouseEnter={() => setHoveredBlockId('__quiz__')}
+                        onMouseLeave={() => setHoveredBlockId(null)}
+                      >
+                        {hoveredBlockId === '__quiz__' && (
+                          <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
+                            <div className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded select-none">
+                              <HelpCircle size={11} />
+                              Questionário de Fixação
+                            </div>
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                onClick={() => {
+                                  const opts = [...(activeLesson.quiz?.options || []), ''];
+                                  updateLesson({ quiz: { ...activeLesson.quiz!, options: opts } });
+                                }}
+                                className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
+                                title="Adicionar opção"
+                              ><Plus size={13} /></button>
+                              <button
+                                onClick={() => updateLesson({ quiz: undefined })}
+                                className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
+                                title="Remover questionário"
+                              ><Trash2 size={13} /></button>
+                            </div>
+                          </div>
+                        )}
+                        <div className={`p-6 space-y-4 ${hoveredBlockId === '__quiz__' ? 'pt-10' : ''}`}>
+                          <input
+                            className="w-full p-3 bg-white border border-slate-200 rounded-md font-bold text-slate-600 outline-none focus:border-faktory-blue"
+                            placeholder="Digite a pergunta do questionário..."
+                            value={activeLesson.quiz?.question}
+                            onChange={(e) => updateLesson({ quiz: { ...activeLesson.quiz!, question: e.target.value } })}
+                          />
+                          <div className="space-y-2">
+                            {activeLesson.quiz?.options.map((option, idx) => (
+                              <div key={idx} className="flex items-center gap-2 bg-slate-50 p-3 rounded-md border border-slate-100 group/opt">
+                                <input
+                                  type="radio"
+                                  checked={activeLesson.quiz?.correctIndex === idx}
+                                  onChange={() => updateLesson({ quiz: { ...activeLesson.quiz!, correctIndex: idx } })}
+                                  title="Marcar como resposta correta"
+                                />
+                                <input
+                                  className="bg-transparent text-sm w-full outline-none"
+                                  value={option}
+                                  onChange={(e) => {
+                                    const newOptions = [...activeLesson.quiz!.options];
+                                    newOptions[idx] = e.target.value;
+                                    updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions } });
+                                  }}
+                                  placeholder={`Opção ${idx + 1}`}
+                                />
+                                {(activeLesson.quiz?.options.length ?? 0) > 2 && (
+                                  <button
+                                    onClick={() => {
+                                      const newOptions = activeLesson.quiz!.options.filter((_, i) => i !== idx);
+                                      const correctIndex = activeLesson.quiz!.correctIndex >= newOptions.length ? 0 : activeLesson.quiz!.correctIndex;
+                                      updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions, correctIndex } });
+                                    }}
+                                    className="opacity-0 group-hover/opt:opacity-100 p-1 text-slate-300 hover:text-red-500 transition-all"
+                                    title="Remover opção"
+                                  ><Trash2 size={12} /></button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-[10px] text-slate-400">Selecione o rádio ao lado da opção correta. Passe o mouse sobre uma opção para removê-la.</p>
+                        </div>
                       </div>
                     </div>
-                  </div>
                   ) : (
-                  <div className="mt-10 pt-10 border-t border-slate-100">
-                    <button
-                      onClick={() => updateLesson({ quiz: { id: genId(), question: '', options: ['', '', '', ''], correctIndex: 0 } })}
-                      className="flex items-center gap-2 text-sm text-slate-400 hover:text-faktory-blue transition-colors"
-                    >
-                      <HelpCircle size={16} />
-                      Adicionar questionário de fixação
-                    </button>
-                  </div>
+                    <div className="mt-10 pt-10 border-t border-slate-100">
+                      <button
+                        onClick={() => updateLesson({ quiz: { id: genId(), question: '', options: ['', '', '', ''], correctIndex: 0 } })}
+                        className="flex items-center gap-2 text-sm text-slate-400 hover:text-faktory-blue transition-colors"
+                      >
+                        <HelpCircle size={16} />
+                        Adicionar questionário de fixação
+                      </button>
+                    </div>
                   )}
                 </>
               )}
@@ -2768,7 +1396,7 @@ export default function TrilhaBuilder() {
               { icon: Code, label: 'Código embed' },
               { icon: HelpCircle, label: 'Questionário' },
             ].map((comp, idx) => (
-              <button 
+              <button
                 key={idx}
                 onClick={() => {
                   // insert or open component depending on type
@@ -2783,58 +1411,44 @@ export default function TrilhaBuilder() {
                   }
 
                   if (label.includes('Imagem')) {
-                    // open file picker to attach image to lesson (do not paste into content)
                     imageInputRef.current?.click();
                     return;
                   }
 
                   if (label.includes('Título')) {
                     const titleHtml = getActiveLessonTitleHtml() || '<h2>Título de seção</h2>';
-                    const block = genBlock(titleHtml, 'title');
-                    updateLesson({ content: (activeLesson.content || '') + '\n' + block } as any);
+                    addBlock('text', { html: titleHtml });
                     showToast('Título inserido');
                     return;
                   }
 
                   if (label.includes('Texto') || label.includes('HTML')) {
-                    const block = genBlock('<p>Novo parágrafo...</p>', 'text');
-                    updateLesson({ content: activeLesson.content + '\n' + block });
+                    addBlock('text', { html: '<p>Novo parágrafo...</p>' });
                     showToast('Texto inserido');
                     return;
                   }
 
-                  if (label.includes('Imagem')) {
-                    const block = genBlock('<img src="https://via.placeholder.com/800x400" alt="Imagem" />', 'image');
-                    updateLesson({ content: activeLesson.content + '\n' + block });
-                    showToast('Imagem inserida');
-                    return;
-                  }
-
                   if (label.includes('destaque')) {
-                    const block = genBlock('<p class="highlight"><strong>Texto em destaque</strong></p>', 'highlight');
-                    updateLesson({ content: activeLesson.content + '\n' + block });
+                    addBlock('text', { html: '<div style="background: #f0f9ff; border-left: 4px solid #0ea5e9; padding: 1rem; margin-bottom: 1rem;"><strong>Texto em destaque</strong></div>' });
                     showToast('Texto em destaque inserido');
                     return;
                   }
 
                   if (label.includes('painéis')) {
-                    const block = genBlock('<div class="panel-group">\n  <div class="panel">Painel 1</div>\n  <div class="panel">Painel 2</div>\n</div>', 'panels');
-                    updateLesson({ content: activeLesson.content + '\n' + block });
+                    addBlock('text', { html: '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"><div style="padding: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem;">Painel 1</div><div style="padding: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem;">Painel 2</div></div>' });
                     showToast('Grupo de painéis inserido');
                     return;
                   }
 
                   if (label.includes('embed')) {
-                    const block = genBlock('<div class="embed"><!-- Cole o código embed aqui --></div>', 'embed');
-                    updateLesson({ content: activeLesson.content + '\n' + block });
+                    addBlock('iframe', { url: '' });
                     showToast('Embed inserido');
                     return;
                   }
 
                   if (label.includes('Questionário')) {
-                    if (!activeLesson.quiz) {
-                      updateLesson({ quiz: { id: Date.now().toString() + '-quiz', question: 'Nova pergunta', options: ['',''], correctIndex: 0 } });
-                    }
+                    addBlock('quiz', { questionnaireId: '' });
+                    showToast('Questionário inserido');
                     return;
                   }
                 }}
@@ -2858,7 +1472,7 @@ export default function TrilhaBuilder() {
       <AnimatePresence>
         {showVideoModal && activeLesson && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
@@ -2874,7 +1488,7 @@ export default function TrilhaBuilder() {
                     <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Aula: {activeLesson.title}</p>
                   </div>
                 </div>
-                <button 
+                <button
                   onClick={() => setShowVideoModal(false)}
                   className="p-2 hover:bg-slate-200 rounded-full transition-colors"
                 >
@@ -2886,7 +1500,7 @@ export default function TrilhaBuilder() {
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">URL do Vídeo (YouTube, Vimeo, etc.)</label>
                   <div className="relative">
-                    <input 
+                    <input
                       className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue transition-all"
                       placeholder="https://www.youtube.com/embed/..."
                       value={activeLesson.videoUrl}
@@ -2901,12 +1515,12 @@ export default function TrilhaBuilder() {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">URL da Legenda (VTT/SRT)</label>
-                  <input 
+                  <input
                     className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue transition-all"
                     placeholder="https://exemplo.com/legendas.vtt"
                     value={activeLesson.videoOptions?.subtitlesUrl || ''}
-                    onChange={(e) => updateLesson({ 
-                      videoOptions: { ...activeLesson.videoOptions, subtitlesUrl: e.target.value } 
+                    onChange={(e) => updateLesson({
+                      videoOptions: { ...activeLesson.videoOptions, subtitlesUrl: e.target.value }
                     })}
                   />
                 </div>
@@ -2914,12 +1528,12 @@ export default function TrilhaBuilder() {
                 <div className="grid grid-cols-2 gap-6 pt-2">
                   <label className="flex items-center gap-3 cursor-pointer group">
                     <div className="relative">
-                      <input 
-                        type="checkbox" 
+                      <input
+                        type="checkbox"
                         className="sr-only"
                         checked={activeLesson.videoOptions?.autoplay || false}
-                        onChange={(e) => updateLesson({ 
-                          videoOptions: { ...activeLesson.videoOptions, autoplay: e.target.checked } 
+                        onChange={(e) => updateLesson({
+                          videoOptions: { ...activeLesson.videoOptions, autoplay: e.target.checked }
                         })}
                       />
                       <div className={cn(
@@ -2936,12 +1550,12 @@ export default function TrilhaBuilder() {
 
                   <label className="flex items-center gap-3 cursor-pointer group">
                     <div className="relative">
-                      <input 
-                        type="checkbox" 
+                      <input
+                        type="checkbox"
                         className="sr-only"
                         checked={activeLesson.videoOptions?.loop || false}
-                        onChange={(e) => updateLesson({ 
-                          videoOptions: { ...activeLesson.videoOptions, loop: e.target.checked } 
+                        onChange={(e) => updateLesson({
+                          videoOptions: { ...activeLesson.videoOptions, loop: e.target.checked }
                         })}
                       />
                       <div className={cn(
@@ -2958,12 +1572,12 @@ export default function TrilhaBuilder() {
 
                   <label className="flex items-center gap-3 cursor-pointer group">
                     <div className="relative">
-                      <input 
-                        type="checkbox" 
+                      <input
+                        type="checkbox"
                         className="sr-only"
                         checked={activeLesson.videoOptions?.controls !== false}
-                        onChange={(e) => updateLesson({ 
-                          videoOptions: { ...activeLesson.videoOptions, controls: e.target.checked } 
+                        onChange={(e) => updateLesson({
+                          videoOptions: { ...activeLesson.videoOptions, controls: e.target.checked }
                         })}
                       />
                       <div className={cn(
@@ -2980,37 +1594,37 @@ export default function TrilhaBuilder() {
                 </div>
               </div>
 
-                <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-3">
-                  <button 
+              <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => { updateLesson({ videoUrl: '' }); setShowVideoModal(false); }}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg font-bold text-sm hover:bg-red-700 transition-all"
+                >
+                  <Trash2 size={14} />
+                  Remover Vídeo
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
                     type="button"
-                    onClick={() => { updateLesson({ videoUrl: '' }); setShowVideoModal(false); }}
-                    className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg font-bold text-sm hover:bg-red-700 transition-all"
+                    onClick={() => insertVideoAsBlock()}
+                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg font-medium text-sm hover:bg-slate-50 transition-all"
                   >
-                    <Trash2 size={14} />
-                    Remover Vídeo
+                    Inserir como bloco
                   </button>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => insertVideoAsBlock()}
-                      className="px-4 py-2 bg-white border border-slate-200 rounded-lg font-medium text-sm hover:bg-slate-50 transition-all"
-                    >
-                      Inserir como bloco
-                    </button>
-                    <button 
-                      onClick={() => setShowVideoModal(false)}
-                      className="px-4 py-2 bg-white border border-slate-200 rounded-lg font-medium text-sm hover:bg-slate-50 transition-all"
-                    >
-                      Cancelar
-                    </button>
-                    <button 
-                      onClick={() => setShowVideoModal(false)}
-                      className="px-6 py-2 bg-faktory-blue text-white rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-all"
-                    >
-                      Confirmar
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => setShowVideoModal(false)}
+                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg font-medium text-sm hover:bg-slate-50 transition-all"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={() => setShowVideoModal(false)}
+                    className="px-6 py-2 bg-faktory-blue text-white rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-all"
+                  >
+                    Confirmar
+                  </button>
                 </div>
+              </div>
             </motion.div>
           </div>
         )}
@@ -3035,13 +1649,13 @@ export default function TrilhaBuilder() {
                     <div key={m.id} className="p-4 border rounded">
                       <h4 className="font-bold">{m.title}</h4>
                       <ul className="list-disc pl-6 mt-2">
-                        {m.lessons.map(l => <li key={l.id}>{l.title}</li>)}
+                        {(m.etapas || []).map(l => <li key={l.id}>{l.title}</li>)}
                       </ul>
                       {(m.submodules || []).map(sm => (
                         <div key={sm.id} className="mt-3 ml-4 p-3 border rounded bg-slate-50">
                           <h5 className="font-semibold">{sm.title}</h5>
                           <ul className="list-disc pl-6 mt-2">
-                            {sm.lessons.map(l => <li key={l.id}>{l.title}</li>)}
+                            {(sm.etapas || []).map(l => <li key={l.id}>{l.title}</li>)}
                           </ul>
                         </div>
                       ))}
@@ -3071,7 +1685,7 @@ export default function TrilhaBuilder() {
       </AnimatePresence>
       {/* Block Editor Modal */}
       <AnimatePresence>
-        {showBlockEditor && editingBlockIdState && (
+        {showBlockEditor && editingBlockId && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[120] p-4">
             <motion.div
               initial={{ opacity: 0, scale: 0.98, y: 10 }}
@@ -3090,7 +1704,7 @@ export default function TrilhaBuilder() {
               <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
 
                 {/* ── Título ── */}
-                {editingBlockTypeState === 'title' && (
+                {editingBlockType === 'title' && (
                   <>
                     <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Texto do título</div>
                     <div className="border border-slate-200 rounded-lg overflow-hidden">
@@ -3099,7 +1713,7 @@ export default function TrilhaBuilder() {
                         <button type="button" title="Itálico" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('italic')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white italic">I</button>
                         <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="inherit"
                           onMouseDown={(e) => e.stopPropagation()}
-                          onChange={(e) => { restoreEditorSelection(); execCommand('fontName', e.target.value); }}>
+                          onChange={(e) => { restoreSelection(); execCommand('fontName', e.target.value); }}>
                           <option value="inherit">Fonte</option>
                           <option value="Arial">Arial</option>
                           <option value="Georgia">Georgia</option>
@@ -3107,7 +1721,7 @@ export default function TrilhaBuilder() {
                         </select>
                         <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="3"
                           onMouseDown={(e) => e.stopPropagation()}
-                          onChange={(e) => { restoreEditorSelection(); execCommand('fontSize', e.target.value); }}>
+                          onChange={(e) => { restoreSelection(); execCommand('fontSize', e.target.value); }}>
                           <option value="1">10px</option>
                           <option value="2">12px</option>
                           <option value="3">14px</option>
@@ -3117,8 +1731,8 @@ export default function TrilhaBuilder() {
                           <option value="7">48px</option>
                         </select>
                         <input type="color" className="w-8 h-8 p-0 border rounded cursor-pointer" title="Cor da fonte"
-                          onMouseDown={(e) => { saveEditorSelection(); e.stopPropagation(); }}
-                          onChange={(e) => { restoreEditorSelection(); execCommand('foreColor', e.target.value); }} />
+                          onMouseDown={(e) => { saveSelection(); e.stopPropagation(); }}
+                          onChange={(e) => { restoreSelection(); execCommand('foreColor', e.target.value); }} />
                         <div className="w-px h-5 bg-slate-200 mx-1" />
                         <button type="button" title="Alinhar esquerda" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyLeft')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">L</button>
                         <button type="button" title="Centralizar" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyCenter')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">C</button>
@@ -3129,9 +1743,9 @@ export default function TrilhaBuilder() {
                         ref={wysiwygRef}
                         contentEditable
                         suppressContentEditableWarning
-                        onMouseUp={() => saveEditorSelection()}
-                        onKeyUp={() => saveEditorSelection()}
-                        onInput={(e) => { handleWysiwygInput((e.currentTarget as HTMLDivElement).innerHTML); saveEditorSelection(); }}
+                        onMouseUp={() => saveSelection()}
+                        onKeyUp={() => saveSelection()}
+                        onInput={(e) => { handleWysiwygInput((e.currentTarget as HTMLDivElement).innerHTML); saveSelection(); }}
                         className="w-full p-4 text-slate-700 outline-none bg-white rich-text-editor"
                         style={{ minHeight: 120 }}
                         dir="ltr"
@@ -3141,22 +1755,22 @@ export default function TrilhaBuilder() {
                 )}
 
                 {/* ── Vídeo / Embed ── */}
-                {(editingBlockTypeState === 'video' || editingBlockTypeState === 'embed') && (
+                {(editingBlockType === 'video' || editingBlockType === 'embed') && (
                   <>
                     <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">URL do vídeo</div>
                     <input
                       autoFocus
-                      value={editingBlockHtmlState}
+                      value={editingBlockHtml}
                       onChange={(e) => handleEditorValueChange(e.target.value)}
                       className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
                       placeholder="https://www.youtube.com/watch?v=..."
                       dir="ltr"
                     />
                     <p className="text-[10px] text-slate-400 italic">Cole o link do YouTube, Vimeo ou URL de embed direta.</p>
-                    {editingBlockHtmlState && (
+                    {editingBlockHtml && (
                       <div className="rounded-lg overflow-hidden border border-slate-100 flex-1">
                         <iframe
-                          src={getEmbedUrl(editingBlockHtmlState) || editingBlockHtmlState}
+                          src={getEmbedUrl(editingBlockHtml) || editingBlockHtml}
                           width="100%"
                           height="100%"
                           style={{ minHeight: 360 }}
@@ -3169,8 +1783,52 @@ export default function TrilhaBuilder() {
                   </>
                 )}
 
+                {/* ── Image Edit ── */}
+                {editingBlockType === 'image' && (
+                  <div className="flex-1 overflow-auto space-y-6">
+                    <div>
+                      <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-2">URL da Imagem</div>
+                      <input
+                        autoFocus
+                        value={editingBlockPayload?.url || ''}
+                        onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, url: e.target.value }))}
+                        className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
+                        placeholder="https://exemplo.com/imagem.jpg"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-2">Largura (ex: 100%, 500px)</div>
+                        <input
+                          value={editingBlockPayload?.width || ''}
+                          onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, width: e.target.value }))}
+                          className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
+                          placeholder="Ex: 500px ou 100%"
+                        />
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-2">Alinhamento</div>
+                        <select
+                          value={editingBlockPayload?.align || 'center'}
+                          onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, align: e.target.value }))}
+                          className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
+                        >
+                          <option value="left">Esquerda</option>
+                          <option value="center">Centro</option>
+                          <option value="right">Direita</option>
+                        </select>
+                      </div>
+                    </div>
+                    {editingBlockPayload?.url && (
+                      <div className="mt-4 p-4 border border-slate-200 rounded-lg bg-slate-50 flex items-center justify-center">
+                        <img src={editingBlockPayload.url} alt="Preview" style={{ maxWidth: '100%', maxHeight: '300px' }} />
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* ── WYSIWYG / Custom ── */}
-                {editingBlockTypeState !== 'title' && editingBlockTypeState !== 'video' && editingBlockTypeState !== 'embed' && (
+                {editingBlockType !== 'title' && editingBlockType !== 'video' && editingBlockType !== 'embed' && editingBlockType !== 'image' && (
                   <>
                     {/* Toolbar */}
                     <div className="border border-slate-200 rounded-lg overflow-hidden shrink-0">
@@ -3300,8 +1958,8 @@ export default function TrilhaBuilder() {
                           type="button"
                           title="Desfazer (Ctrl+Z)"
                           onMouseDown={(e) => e.preventDefault()}
-                          onClick={handleUndoEditor}
-                          disabled={!canUndoEditor()}
+                          onClick={handleUndo}
+                          disabled={!canUndo()}
                           className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Undo2 size={14} />
@@ -3310,8 +1968,8 @@ export default function TrilhaBuilder() {
                           type="button"
                           title="Refazer (Ctrl+Y / Ctrl+Shift+Z)"
                           onMouseDown={(e) => e.preventDefault()}
-                          onClick={handleRedoEditor}
-                          disabled={!canRedoEditor()}
+                          onClick={handleRedo}
+                          disabled={!canRedo()}
                           className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Redo2 size={14} />
@@ -3324,27 +1982,27 @@ export default function TrilhaBuilder() {
                         {/* Toggle fonte */}
                         <button type="button" onClick={() => {
                           // Sync WYSIWYG content to state before switching to source view
-                          if (useWysiwygEditor && wysiwygRef.current) {
-                            setEditingBlockHtmlState(wysiwygRef.current.innerHTML);
+                          if (useWysiwygMode && wysiwygRef.current) {
+                            setEditingBlockHtml(wysiwygRef.current.innerHTML);
                           }
-                          setUseWysiwygEditor(prev => !prev);
+                          setUseWysiwygMode(prev => !prev);
                         }}
                           className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-slate-100 text-xs text-slate-500 ml-auto">
-                          {useWysiwygEditor ? '</> Fonte' : '📝 Visual'}
+                          {useWysiwygMode ? '</> Fonte' : '📝 Visual'}
                         </button>
                       </div>
 
                       {/* Área editável */}
-                      {useWysiwygEditor ? (
+                      {useWysiwygMode ? (
                         <div
                           ref={wysiwygRef}
                           contentEditable
                           suppressContentEditableWarning
-                          onMouseUp={() => saveEditorSelection()}
-                          onKeyUp={() => saveEditorSelection()}
+                          onMouseUp={() => saveSelection()}
+                          onKeyUp={() => saveSelection()}
                           onInput={(e) => {
                             handleWysiwygInput((e.currentTarget as HTMLDivElement).innerHTML);
-                            saveEditorSelection();
+                            saveSelection();
                           }}
                           className="w-full p-5 text-sm outline-none bg-white rich-text-editor"
                           style={{ minHeight: 380, lineHeight: 1.7 }}
@@ -3352,7 +2010,7 @@ export default function TrilhaBuilder() {
                         />
                       ) : (
                         <textarea
-                          value={editingBlockHtmlState}
+                          value={editingBlockHtml}
                           onChange={(e) => handleEditorValueChange(e.target.value)}
                           className="w-full p-4 font-mono text-sm outline-none bg-white resize-none"
                           style={{ minHeight: 380 }}
