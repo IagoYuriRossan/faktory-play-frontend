@@ -4,9 +4,9 @@ import { api } from '../../utils/api';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
 import { useQuestionnaire, startAttempt, submitAttempt } from '../../hooks/useQuestionnaire';
 import { Trail, Lesson, Enrollment } from '../../@types';
-import { 
-  ArrowLeft, 
-  CheckCircle2, 
+import {
+  ArrowLeft,
+  CheckCircle2,
   HelpCircle,
   ChevronDown,
   ChevronRight,
@@ -17,13 +17,12 @@ import {
   ClipboardList
 } from 'lucide-react';
 import { cn } from '../../utils/utils';
-import { MOCK_TRAILS } from '../../mocks/data';
 
 export default function AlunoAulaPlayer() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user, token } = useAuthStore();
-  
+
   const [trail, setTrail] = useState<Trail | null>(null);
   const [currentLesson, setCurrentLesson] = useState<Lesson | null>(null);
   const [enrollment, setEnrollment] = useState<Enrollment | null>(null);
@@ -42,57 +41,53 @@ export default function AlunoAulaPlayer() {
       if (!id || !user) return;
 
       try {
-          // 1. Fetch trail with silent fallbacks (avoid noisy api logs on expected 404)
-          let trailData: Trail | null = null;
-          const BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
-          async function tryFetchSilent<T>(path: string): Promise<T | null | 'unauth'> {
-            try {
-              const headers: Record<string, string> = {};
-              if (token) headers['Authorization'] = `Bearer ${token}`;
-              const res = await fetch(`${BASE}${path}`, { headers });
-              if (res.status === 401) return 'unauth';
-              if (!res.ok) return null;
-              return await res.json();
-            } catch {
-              return null;
-            }
+        // 1. Fetch trail with silent fallbacks (avoid noisy api logs on expected 404)
+        let trailData: Trail | null = null;
+        const BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
+        async function tryFetchSilent<T>(path: string): Promise<T | null | 'unauth'> {
+          try {
+            const headers: Record<string, string> = {};
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            const res = await fetch(`${BASE}${path}`, { headers });
+            if (res.status === 401) return 'unauth';
+            if (!res.ok) return null;
+            return await res.json();
+          } catch {
+            return null;
           }
+        }
 
-          const r1 = await tryFetchSilent<Trail>(`/api/trails/${id}`);
-          if (r1 === 'unauth') {
-            setNeedAuth(true);
-            trailData = null;
-          } else {
-            trailData = r1 as Trail | null;
-          }
+        const r1 = await tryFetchSilent<Trail>(`/api/trails/${id}`);
+        if (r1 === 'unauth') {
+          setNeedAuth(true);
+          trailData = null;
+        } else {
+          trailData = r1 as Trail | null;
+        }
 
-          if (!trailData && !needAuth) {
-            const r2 = await tryFetchSilent<Trail>(`/api/trails/${id}/export`);
-            if (r2 === 'unauth') { setNeedAuth(true); }
-            else trailData = r2 as Trail | null;
-          }
-          if (!trailData && !needAuth) {
-            const all = await tryFetchSilent<Trail[]>(`/api/trails`);
-            if (all === 'unauth') { setNeedAuth(true); }
-            else if (all) trailData = all.find(t => t.id === id) || null;
-          }
-          if (!trailData) {
-            const mockTrail = MOCK_TRAILS.find(t => t.id === id);
-            if (mockTrail) trailData = mockTrail;
-          }
+        if (!trailData && !needAuth) {
+          const r2 = await tryFetchSilent<Trail>(`/api/trails/${id}/export`);
+          if (r2 === 'unauth') { setNeedAuth(true); }
+          else trailData = r2 as Trail | null;
+        }
+        if (!trailData && !needAuth) {
+          const all = await tryFetchSilent<Trail[]>(`/api/trails`);
+          if (all === 'unauth') { setNeedAuth(true); }
+          else if (all) trailData = all.find(t => t.id === id) || null;
+        }
 
         if (trailData) {
           setTrail(trailData);
           // pick a sensible current lesson: prefer active lesson, fallback to first available
           const firstModule = trailData.modules && trailData.modules[0];
-          const firstLesson = firstModule?.lessons && firstModule.lessons[0];
+          const firstLesson = firstModule?.etapas && firstModule.etapas[0];
           if (firstLesson) setCurrentLesson(firstLesson);
           else {
             // try to find first sublesson
             let found: Lesson | null = null;
             for (const m of trailData.modules) {
-              for (const l of m.lessons) {
-                if (l.sublessons && l.sublessons.length > 0) { found = l.sublessons[0]; break; }
+              for (const l of m.etapas) {
+                if (l.subetapas && l.subetapas?.length > 0) { found = l.subetapas[0]; break; }
               }
               if (found) break;
             }
@@ -105,7 +100,7 @@ export default function AlunoAulaPlayer() {
         try {
           const progress = await api.get<any[]>(`/api/users/${user.id}/progress`);
           const completedLessons = progress.filter(p => p.completed).map(p => p.lessonId);
-          const totalLessons = trailData?.modules.reduce((acc, m) => acc + m.lessons.length, 0) || 1;
+          const totalLessons = trailData?.modules.reduce((acc, m) => acc + m.etapas.length, 0) || 1;
           const progressPct = Math.round((completedLessons.length / totalLessons) * 100);
           setEnrollment({
             id: `${user.id}-${id}`,
@@ -138,14 +133,14 @@ export default function AlunoAulaPlayer() {
   }, [id, user]);
 
   const toggleModule = (moduleId: string) => {
-    setExpandedModules(prev => 
+    setExpandedModules(prev =>
       prev.includes(moduleId) ? prev.filter(id => id !== moduleId) : [...prev, moduleId]
     );
   };
 
   const getEmbedUrl = (url: string) => {
     if (!url) return '';
-    
+
     // YouTube standard and unlisted
     const ytMatch = url.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     if (ytMatch) {
@@ -172,7 +167,7 @@ export default function AlunoAulaPlayer() {
           ? enrollment.completedLessons
           : [...enrollment.completedLessons, currentLesson.id];
 
-        const totalLessons = trail.modules.reduce((acc, m) => acc + m.lessons.length, 0);
+        const totalLessons = trail.modules.reduce((acc, m) => acc + m.etapas.length, 0);
         const newProgress = Math.round((newCompletedLessons.length / totalLessons) * 100);
 
         try {
@@ -276,7 +271,7 @@ export default function AlunoAulaPlayer() {
             await api.get(`/api/projects/${encodeURIComponent(projectId)}/users/${encodeURIComponent(userId)}/progress`);
             await api.get(`/api/projects/${encodeURIComponent(projectId)}/progress`);
             // notify other components (Cronograma) to reload
-            try { window.dispatchEvent(new CustomEvent('project:progress-updated', { detail: { projectId } })); } catch(e) { /* ignore */ }
+            try { window.dispatchEvent(new CustomEvent('project:progress-updated', { detail: { projectId } })); } catch (e) { /* ignore */ }
           }
         } catch (e) {
           // ignore errors on refresh
@@ -396,7 +391,7 @@ export default function AlunoAulaPlayer() {
     );
   }
 
-  const currentModule = trail.modules.find(m => m.lessons.some(l => l.id === currentLesson.id));
+  const currentModule = trail.modules.find(m => m.etapas.some(l => l.id === currentLesson.id));
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -409,8 +404,8 @@ export default function AlunoAulaPlayer() {
             </h1>
             <div className="flex items-center gap-2">
               <div className="w-32 h-1 bg-gray-100 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-faktory-blue transition-all duration-500" 
+                <div
+                  className="h-full bg-faktory-blue transition-all duration-500"
                   style={{ width: `${enrollment?.progress || 0}%` }}
                 ></div>
               </div>
@@ -418,7 +413,7 @@ export default function AlunoAulaPlayer() {
             </div>
           </div>
         </div>
-        
+
         <div className="flex items-center gap-2 text-[10px] text-gray-400">
           <Link to="/app" className="hover:text-faktory-blue flex items-center gap-1 uppercase font-bold">
             <ArrowLeft size={10} /> PAINEL
@@ -452,18 +447,18 @@ export default function AlunoAulaPlayer() {
                   )}>
                     {module.title}
                   </span>
-                  <ChevronDown 
-                    size={14} 
+                  <ChevronDown
+                    size={14}
                     className={cn(
                       "text-slate-400 transition-transform",
                       expandedModules.includes(module.id) ? "rotate-180" : ""
-                    )} 
+                    )}
                   />
                 </button>
 
                 {expandedModules.includes(module.id) && (
                   <div className="bg-white/50 border-y border-slate-50">
-                    {module.lessons.map((lesson, lIndex) => (
+                    {module.etapas.map((lesson, lIndex) => (
                       <button
                         key={lesson.id}
                         onClick={() => {
@@ -518,8 +513,8 @@ export default function AlunoAulaPlayer() {
             {/* Video Section */}
             {currentLesson.videoUrl && (
               <div className="mb-12 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl ring-1 ring-slate-200">
-                <iframe 
-                  src={getEmbedUrl(currentLesson.videoUrl)} 
+                <iframe
+                  src={getEmbedUrl(currentLesson.videoUrl)}
                   className="w-full h-full"
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                   allowFullScreen
@@ -530,9 +525,9 @@ export default function AlunoAulaPlayer() {
             {/* Main Image (Faktory Logo) */}
             <div className="mb-12 flex justify-center">
               <div className="max-w-xl w-full">
-                <img 
-                  src="https://faktory.com.br/wp-content/uploads/2023/06/Logo-Faktory-Softwares-Horizontal.png" 
-                  alt="Faktory Softwares" 
+                <img
+                  src="https://faktory.com.br/wp-content/uploads/2023/06/Logo-Faktory-Softwares-Horizontal.png"
+                  alt="Faktory Softwares"
                   className="w-full h-auto"
                   referrerPolicy="no-referrer"
                 />
@@ -543,7 +538,7 @@ export default function AlunoAulaPlayer() {
             </div>
 
             <div className="prose prose-slate max-w-none">
-              <div 
+              <div
                 className="text-slate-600 text-sm leading-relaxed space-y-6 rich-text-content"
                 dangerouslySetInnerHTML={{ __html: currentLesson.content }}
               />
@@ -627,27 +622,27 @@ export default function AlunoAulaPlayer() {
                     <p className="text-sm font-bold text-slate-700 mb-4">{currentLesson.quiz.question}</p>
                     <div className="grid gap-3">
                       {currentLesson.quiz.options.map((option, index) => (
-                        <label 
-                          key={index} 
+                        <label
+                          key={index}
                           className={cn(
                             "flex items-center gap-4 p-4 rounded-xl cursor-pointer transition-all border",
-                            quizAnswer === index 
-                              ? "bg-white border-faktory-blue ring-1 ring-faktory-blue shadow-sm" 
+                            quizAnswer === index
+                              ? "bg-white border-faktory-blue ring-1 ring-faktory-blue shadow-sm"
                               : "bg-white border-slate-200 hover:border-faktory-blue/50"
                           )}
                         >
                           <div className={cn(
                             "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
-                            quizAnswer === index ? "border-faktory-blue bg-faktory-blue" : "border-slate-300" 
+                            quizAnswer === index ? "border-faktory-blue bg-faktory-blue" : "border-slate-300"
                           )}>
                             {quizAnswer === index && <div className="w-2 h-2 bg-white rounded-full"></div>}
                           </div>
-                          <input 
-                            type="radio" 
-                            name="quiz" 
+                          <input
+                            type="radio"
+                            name="quiz"
                             onChange={() => setQuizAnswer(index)}
                             checked={quizAnswer === index}
-                            className="hidden" 
+                            className="hidden"
                           />
                           <span className="text-sm font-medium text-slate-700">{option}</span>
                         </label>
@@ -655,14 +650,14 @@ export default function AlunoAulaPlayer() {
                     </div>
 
                     <div className="flex items-center justify-between mt-8 pt-6 border-t border-slate-200">
-                      <button 
+                      <button
                         onClick={handleQuizSubmit}
                         disabled={quizAnswer === null}
                         className="bg-faktory-blue text-white px-8 py-3 rounded-xl font-bold text-sm hover:bg-[#2c6a9a] disabled:opacity-50 transition-all shadow-lg shadow-blue-200"
                       >
                         Confirmar Resposta
                       </button>
-                      
+
                       {showQuizResult && (
                         <div className={cn(
                           "px-6 py-3 rounded-xl text-sm font-bold animate-in fade-in slide-in-from-bottom-2",
