@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { GripVertical, Copy, Pencil, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import { Etapa, Component } from '../../../../@types/index';
+import { getEmbedUrl } from '../utils/contentBlocks';
 
 interface ContentAreaProps {
   activeLesson: Etapa;
@@ -83,8 +84,17 @@ export function ContentArea({ activeLesson, updateLesson, showToast, blockEditor
                 <div className="rich-text-content pointer-events-none" dangerouslySetInnerHTML={{ __html: comp.payload.html || '' }} />
               )}
               {(comp.type === 'video' || comp.type === 'iframe') && (
-                <div className="embed aspect-video bg-black rounded overflow-hidden">
-                  <iframe src={comp.payload.url} width="100%" height="100%" frameBorder="0" allowFullScreen></iframe>
+                <div className="embed aspect-video bg-black rounded overflow-hidden flex items-center justify-center">
+                  {comp.payload.url ? (
+                    <iframe src={getEmbedUrl(comp.payload.url)} width="100%" height="100%" frameBorder="0" allowFullScreen></iframe>
+                  ) : (
+                    <div className="text-slate-500 text-xs flex flex-col items-center gap-2">
+                      <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-video"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
+                      </div>
+                      Clique para configurar o vídeo
+                    </div>
+                  )}
                 </div>
               )}
               {comp.type === 'image' && (

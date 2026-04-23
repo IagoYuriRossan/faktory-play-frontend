@@ -109,6 +109,7 @@ export function useBlockEditor(deps: UseBlockEditorDeps) {
     };
     comps.push(newComp);
     updateLesson({ components: comps });
+    return newComp.id;
   };
 
 

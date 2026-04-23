@@ -229,7 +229,7 @@ export default function TrilhaBuilder() {
           const form = new FormData(); form.append('file', file);
           await new Promise<void>((resolve, reject) => {
             xhr = new XMLHttpRequest();
-            const url = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001'}/api/trails/${trailId}/modules/${activeModuleId}/lessons/${activeLessonId}/image`;
+            const url = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001'}/api/trails/${trailId}/modules/${activeModuleId}/etapas/${activeLessonId}/image`;
             xhr.open('POST', url, true);
             if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
             xhr.upload.onprogress = (e) => { if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100)); };
@@ -1430,8 +1430,9 @@ export default function TrilhaBuilder() {
                   }
                   const label = comp.label;
                   if (label.includes('Vídeo')) {
-                    addBlock('video', { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' });
-                    showToast('Vídeo inserido como bloco! Clique nele para editar.');
+                    const newId = addBlock('video', { url: '' });
+                    if (newId) editBlockById(newId);
+                    showToast('Vídeo adicionado! Insira a URL no painel.');
                     return;
                   }
 
