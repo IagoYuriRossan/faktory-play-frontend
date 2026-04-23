@@ -17,6 +17,9 @@ import { useTrailData } from './TrilhaBuilder/hooks/useTrailData';
 import { useModuleTree } from './TrilhaBuilder/hooks/useModuleTree';
 import { useEtapaTree } from './TrilhaBuilder/hooks/useEtapaTree';
 import { useBlockEditor } from './TrilhaBuilder/hooks/useBlockEditor';
+import { PreviewModal } from './TrilhaBuilder/components/PreviewModal';
+import { VideoSettingsModal } from './TrilhaBuilder/components/VideoSettingsModal';
+import { BlockEditorModal } from './TrilhaBuilder/components/BlockEditorModal';
 import { trilhaBuilderApi } from './TrilhaBuilder/services/trilhaBuilderApi';
 import { ContentArea } from './TrilhaBuilder/components/ContentArea';
 import { createLogoContent, genBlock, genId, getEmbedUrl, parseBlocks } from './TrilhaBuilder/utils/contentBlocks';
@@ -223,7 +226,7 @@ export default function TrilhaBuilder() {
         try {
           const user = auth.currentUser;
           const token = user ? await user.getIdToken() : null;
-          const form = new FormData(); form.append('image', file);
+          const form = new FormData(); form.append('file', file);
           await new Promise<void>((resolve, reject) => {
             xhr = new XMLHttpRequest();
             const url = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001'}/api/trails/${trailId}/modules/${activeModuleId}/lessons/${activeLessonId}/image`;
@@ -233,7 +236,22 @@ export default function TrilhaBuilder() {
             xhr.onload = () => {
               const status = xhr!.status; let data: any = null;
               try { data = xhr!.responseText ? JSON.parse(xhr!.responseText) : null; } catch { data = xhr!.responseText; }
-              if (status >= 200 && status < 300) { const imageUrl = data?.imageUrl || data?.url; if (imageUrl) { updateLesson({ imageUrl }); showToast('Imagem enviada e salva no servidor'); resolve(); return; } reject(new Error('Resposta do servidor não continha imageUrl')); return; }
+              if (status >= 200 && status < 300) { 
+                const imageUrl = data?.imageUrl || data?.url; 
+                if (imageUrl) { 
+                  if (wysiwyg.editingBlockId && wysiwyg.editingBlockType === 'image') {
+                    wysiwyg.setEditingBlockPayload(prev => ({ ...prev, url: imageUrl }));
+                    showToast('Upload concluído! Imagem inserida no bloco.');
+                  } else {
+                    addBlock('image', { url: imageUrl, width: '100%', align: 'center' }); 
+                    showToast('Imagem enviada e adicionada como bloco!'); 
+                  }
+                  resolve(); 
+                  return; 
+                } 
+                reject(new Error('Resposta do servidor não continha imageUrl')); 
+                return; 
+              }
               if (status === 413) { reject(new Error('Tamanho do arquivo excede o limite de 5MB (413)')); return; }
               reject(new Error((data && data.message) || `Upload failed (${status})`));
             };
@@ -243,11 +261,12 @@ export default function TrilhaBuilder() {
           });
           setUploadProgress(100); return;
         } catch (err: any) {
-          console.warn('Upload falhou, usando DataURL como fallback:', err);
-          if (err?.message?.includes('5MB')) showToast('Erro: arquivo maior que 5MB');
-          const reader = new FileReader();
-          reader.onload = () => { updateLesson({ imageUrl: reader.result as string }); showToast('Upload falhou — imagem armazenada localmente'); };
-          reader.readAsDataURL(file);
+          console.warn('Upload falhou:', err);
+          if (err?.message?.includes('5MB')) {
+            showToast('Erro: arquivo maior que 5MB');
+          } else {
+            showToast('Erro: Upload falhou. Verifique o backend ou o terminal.');
+          }
         } finally {
           setImageUploading(false); setTimeout(() => setUploadProgress(0), 700);
           try { if (xhr) { try { (xhr as any).abort(); } catch { } } } catch { }
@@ -255,9 +274,7 @@ export default function TrilhaBuilder() {
       })();
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => { updateLesson({ imageUrl: reader.result as string }); showToast('Imagem adicionada à aula (local)'); };
-    reader.readAsDataURL(file);
+    showToast('Erro: Nenhuma aula selecionada para upload.');
   };
 
   const activeLesson = getActiveLesson() as Lesson | null;
@@ -1212,15 +1229,22 @@ export default function TrilhaBuilder() {
                             className="w-full h-full pointer-events-none"
                             title="Video Preview"
                           />
-                          <div className="absolute top-3 right-3 flex gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={(e) => { e.stopPropagation(); setVideoPosition('title-top'); }} title="Acima do título" className="bg-white/10 text-white p-2 rounded"> <ChevronUp size={14} /> </button>
-                            <button onClick={(e) => { e.stopPropagation(); setVideoPosition('top'); }} title="Acima do conteúdo" className="bg-white/10 text-white p-2 rounded"> <ChevronUp size={14} /> </button>
-                            <button onClick={(e) => { e.stopPropagation(); setVideoPosition('bottom'); }} title="Abaixo do conteúdo" className="bg-white/10 text-white p-2 rounded"> <ChevronDown size={14} /> </button>
-                            <button onClick={(e) => { e.stopPropagation(); insertVideoAsBlock(); }} title="Inserir como bloco" className="bg-white/10 text-white p-2 rounded"> <Layers size={14} /> </button>
-                            <button onClick={(e) => { e.stopPropagation(); updateLesson({ videoUrl: '' }); showToast('Vídeo removido'); }} title="Remover vídeo" className="bg-white/10 text-white p-2 rounded"> <Trash2 size={14} /> </button>
+                          <div className="absolute top-0 left-0 right-0 p-3 flex justify-between items-start z-10 bg-gradient-to-b from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="flex gap-2">
+                              <span className="bg-yellow-500/20 text-yellow-300 text-[10px] font-bold px-2 py-1 rounded border border-yellow-500/30">Vídeo Legado</span>
+                              <span className="text-xs text-white/80 self-center">Converta para bloco para reordenar livremente.</span>
+                            </div>
+                            <div className="flex gap-2">
+                              <button onClick={(e) => { e.stopPropagation(); insertVideoAsBlock(); }} className="bg-faktory-blue hover:bg-blue-600 text-white text-xs font-bold px-3 py-1.5 rounded flex items-center gap-1 shadow-lg transition-colors">
+                                <Layers size={14} /> Converter em Bloco
+                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); updateLesson({ videoUrl: '' }); showToast('Vídeo removido'); }} title="Remover vídeo" className="bg-red-500/80 hover:bg-red-600 text-white p-1.5 rounded transition-colors">
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
                           </div>
-                          <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-all flex items-center justify-center">
-                            <div className="bg-white/10 backdrop-blur-md p-4 rounded-full border border-white/20 opacity-0 group-hover:opacity-100 transition-all">
+                          <div className="absolute inset-0 bg-black/10 group-hover:bg-black/30 transition-all flex items-center justify-center pointer-events-none">
+                            <div className="bg-white/10 backdrop-blur-md p-4 rounded-full border border-white/20 opacity-0 group-hover:opacity-100 transition-all pointer-events-auto">
                               <Settings className="text-white" size={32} />
                             </div>
                           </div>
@@ -1406,7 +1430,8 @@ export default function TrilhaBuilder() {
                   }
                   const label = comp.label;
                   if (label.includes('Vídeo')) {
-                    setShowVideoModal(true);
+                    addBlock('video', { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' });
+                    showToast('Vídeo inserido como bloco! Clique nele para editar.');
                     return;
                   }
 
@@ -1469,204 +1494,20 @@ export default function TrilhaBuilder() {
       </div>
 
       {/* Video Settings Modal */}
-      <AnimatePresence>
-        {showVideoModal && activeLesson && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white rounded-xl shadow-2xl w-full max-w-xl overflow-hidden"
-            >
-              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-faktory-blue rounded-lg flex items-center justify-center text-white">
-                    <Video size={20} />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-bold text-slate-800">Configurações de Vídeo</h2>
-                    <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Aula: {activeLesson.title}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowVideoModal(false)}
-                  className="p-2 hover:bg-slate-200 rounded-full transition-colors"
-                >
-                  <Minus size={20} className="text-slate-400" />
-                </button>
-              </div>
+      <VideoSettingsModal
+        show={showVideoModal}
+        onClose={() => setShowVideoModal(false)}
+        activeLesson={activeLesson || null}
+        updateLesson={updateLesson}
+        insertVideoAsBlock={insertVideoAsBlock}
+      />
 
-              <div className="p-8 space-y-6">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">URL do Vídeo (YouTube, Vimeo, etc.)</label>
-                  <div className="relative">
-                    <input
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue transition-all"
-                      placeholder="https://www.youtube.com/embed/..."
-                      value={activeLesson.videoUrl}
-                      onChange={(e) => updateLesson({ videoUrl: e.target.value })}
-                    />
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-300">
-                      <MousePointer2 size={16} />
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-2 italic">* Use o link de incorporação (embed) para melhor compatibilidade.</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">URL da Legenda (VTT/SRT)</label>
-                  <input
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue transition-all"
-                    placeholder="https://exemplo.com/legendas.vtt"
-                    value={activeLesson.videoOptions?.subtitlesUrl || ''}
-                    onChange={(e) => updateLesson({
-                      videoOptions: { ...activeLesson.videoOptions, subtitlesUrl: e.target.value }
-                    })}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-6 pt-2">
-                  <label className="flex items-center gap-3 cursor-pointer group">
-                    <div className="relative">
-                      <input
-                        type="checkbox"
-                        className="sr-only"
-                        checked={activeLesson.videoOptions?.autoplay || false}
-                        onChange={(e) => updateLesson({
-                          videoOptions: { ...activeLesson.videoOptions, autoplay: e.target.checked }
-                        })}
-                      />
-                      <div className={cn(
-                        "w-10 h-5 rounded-full transition-all",
-                        activeLesson.videoOptions?.autoplay ? "bg-faktory-blue" : "bg-slate-200"
-                      )}></div>
-                      <div className={cn(
-                        "absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-all",
-                        activeLesson.videoOptions?.autoplay ? "translate-x-5" : ""
-                      )}></div>
-                    </div>
-                    <span className="text-xs font-bold text-slate-600 group-hover:text-faktory-blue transition-colors">Reprodução Automática</span>
-                  </label>
-
-                  <label className="flex items-center gap-3 cursor-pointer group">
-                    <div className="relative">
-                      <input
-                        type="checkbox"
-                        className="sr-only"
-                        checked={activeLesson.videoOptions?.loop || false}
-                        onChange={(e) => updateLesson({
-                          videoOptions: { ...activeLesson.videoOptions, loop: e.target.checked }
-                        })}
-                      />
-                      <div className={cn(
-                        "w-10 h-5 rounded-full transition-all",
-                        activeLesson.videoOptions?.loop ? "bg-faktory-blue" : "bg-slate-200"
-                      )}></div>
-                      <div className={cn(
-                        "absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-all",
-                        activeLesson.videoOptions?.loop ? "translate-x-5" : ""
-                      )}></div>
-                    </div>
-                    <span className="text-xs font-bold text-slate-600 group-hover:text-faktory-blue transition-colors">Repetir Vídeo (Loop)</span>
-                  </label>
-
-                  <label className="flex items-center gap-3 cursor-pointer group">
-                    <div className="relative">
-                      <input
-                        type="checkbox"
-                        className="sr-only"
-                        checked={activeLesson.videoOptions?.controls !== false}
-                        onChange={(e) => updateLesson({
-                          videoOptions: { ...activeLesson.videoOptions, controls: e.target.checked }
-                        })}
-                      />
-                      <div className={cn(
-                        "w-10 h-5 rounded-full transition-all",
-                        activeLesson.videoOptions?.controls !== false ? "bg-faktory-blue" : "bg-slate-200"
-                      )}></div>
-                      <div className={cn(
-                        "absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-all",
-                        activeLesson.videoOptions?.controls !== false ? "translate-x-5" : ""
-                      )}></div>
-                    </div>
-                    <span className="text-xs font-bold text-slate-600 group-hover:text-faktory-blue transition-colors">Exibir Controles</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={() => { updateLesson({ videoUrl: '' }); setShowVideoModal(false); }}
-                  className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg font-bold text-sm hover:bg-red-700 transition-all"
-                >
-                  <Trash2 size={14} />
-                  Remover Vídeo
-                </button>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => insertVideoAsBlock()}
-                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg font-medium text-sm hover:bg-slate-50 transition-all"
-                  >
-                    Inserir como bloco
-                  </button>
-                  <button
-                    onClick={() => setShowVideoModal(false)}
-                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg font-medium text-sm hover:bg-slate-50 transition-all"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    onClick={() => setShowVideoModal(false)}
-                    className="px-6 py-2 bg-faktory-blue text-white rounded-lg font-bold text-sm hover:bg-[#2c6a9a] transition-all"
-                  >
-                    Confirmar
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      {/* Preview Modal */}
-      <AnimatePresence>
-        {showPreviewModal && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[110] p-4">
-            <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }} className="bg-white rounded-xl shadow-2xl w-full max-w-4xl overflow-auto">
-              <div className="p-4 border-b flex items-center justify-between">
-                <h3 className="font-bold text-lg">Visualização da Trilha</h3>
-                <div className="flex items-center gap-2">
-                  <button onClick={handleRefreshFromServer} className="px-3 py-1 text-sm border rounded">Recarregar</button>
-                  <button onClick={() => setShowPreviewModal(false)} className="px-3 py-1 bg-faktory-blue text-white rounded">Fechar</button>
-                </div>
-              </div>
-              <div className="p-6">
-                <h2 className="text-2xl font-bold mb-2">{trailData.title}</h2>
-                <p className="text-slate-500 mb-6">{trailData.description}</p>
-                <div className="space-y-4">
-                  {trailData.modules.map((m) => (
-                    <div key={m.id} className="p-4 border rounded">
-                      <h4 className="font-bold">{m.title}</h4>
-                      <ul className="list-disc pl-6 mt-2">
-                        {(m.etapas || []).map(l => <li key={l.id}>{l.title}</li>)}
-                      </ul>
-                      {(m.submodules || []).map(sm => (
-                        <div key={sm.id} className="mt-3 ml-4 p-3 border rounded bg-slate-50">
-                          <h5 className="font-semibold">{sm.title}</h5>
-                          <ul className="list-disc pl-6 mt-2">
-                            {(sm.etapas || []).map(l => <li key={l.id}>{l.title}</li>)}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <PreviewModal
+        show={showPreviewModal}
+        onClose={() => setShowPreviewModal(false)}
+        onRefresh={handleRefreshFromServer}
+        trailData={trailData}
+      />
 
       {/* Delete Confirm Modal */}
       <AnimatePresence>
@@ -1683,354 +1524,14 @@ export default function TrilhaBuilder() {
           </div>
         )}
       </AnimatePresence>
-      {/* Block Editor Modal */}
-      <AnimatePresence>
-        {showBlockEditor && editingBlockId && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[120] p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.98, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.98, y: 10 }}
-              className="bg-white rounded-xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden"
-              style={{ height: '88vh' }}
-            >
-              {/* Header */}
-              <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between shrink-0">
-                <h3 className="text-base font-bold text-slate-800">Editar Bloco</h3>
-                <button onClick={cancelEditBlock} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100"><Minus size={18} /></button>
-              </div>
-
-              {/* Body */}
-              <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
-
-                {/* ── Título ── */}
-                {editingBlockType === 'title' && (
-                  <>
-                    <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Texto do título</div>
-                    <div className="border border-slate-200 rounded-lg overflow-hidden">
-                      <div className="flex items-center gap-1 px-2 py-1.5 bg-slate-50 border-b border-slate-200" onMouseDown={(e) => { if ((e.target as HTMLElement).tagName === 'BUTTON') e.preventDefault(); }}>
-                        <button type="button" title="Negrito" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('bold')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white font-bold">B</button>
-                        <button type="button" title="Itálico" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('italic')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white italic">I</button>
-                        <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="inherit"
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onChange={(e) => { restoreSelection(); execCommand('fontName', e.target.value); }}>
-                          <option value="inherit">Fonte</option>
-                          <option value="Arial">Arial</option>
-                          <option value="Georgia">Georgia</option>
-                          <option value="Times New Roman">Times New Roman</option>
-                        </select>
-                        <select className="h-7 text-xs border border-slate-200 rounded px-1 bg-white" defaultValue="3"
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onChange={(e) => { restoreSelection(); execCommand('fontSize', e.target.value); }}>
-                          <option value="1">10px</option>
-                          <option value="2">12px</option>
-                          <option value="3">14px</option>
-                          <option value="4">18px</option>
-                          <option value="5">24px</option>
-                          <option value="6">32px</option>
-                          <option value="7">48px</option>
-                        </select>
-                        <input type="color" className="w-8 h-8 p-0 border rounded cursor-pointer" title="Cor da fonte"
-                          onMouseDown={(e) => { saveSelection(); e.stopPropagation(); }}
-                          onChange={(e) => { restoreSelection(); execCommand('foreColor', e.target.value); }} />
-                        <div className="w-px h-5 bg-slate-200 mx-1" />
-                        <button type="button" title="Alinhar esquerda" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyLeft')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">L</button>
-                        <button type="button" title="Centralizar" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyCenter')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">C</button>
-                        <button type="button" title="Alinhar direita" onMouseDown={(e) => e.preventDefault()} onClick={() => execCommand('justifyRight')} className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white">R</button>
-                        <div className="ml-auto" />
-                      </div>
-                      <div
-                        ref={wysiwygRef}
-                        contentEditable
-                        suppressContentEditableWarning
-                        onMouseUp={() => saveSelection()}
-                        onKeyUp={() => saveSelection()}
-                        onInput={(e) => { handleWysiwygInput((e.currentTarget as HTMLDivElement).innerHTML); saveSelection(); }}
-                        className="w-full p-4 text-slate-700 outline-none bg-white rich-text-editor"
-                        style={{ minHeight: 120 }}
-                        dir="ltr"
-                      />
-                    </div>
-                  </>
-                )}
-
-                {/* ── Vídeo / Embed ── */}
-                {(editingBlockType === 'video' || editingBlockType === 'embed') && (
-                  <>
-                    <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">URL do vídeo</div>
-                    <input
-                      autoFocus
-                      value={editingBlockHtml}
-                      onChange={(e) => handleEditorValueChange(e.target.value)}
-                      className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
-                      placeholder="https://www.youtube.com/watch?v=..."
-                      dir="ltr"
-                    />
-                    <p className="text-[10px] text-slate-400 italic">Cole o link do YouTube, Vimeo ou URL de embed direta.</p>
-                    {editingBlockHtml && (
-                      <div className="rounded-lg overflow-hidden border border-slate-100 flex-1">
-                        <iframe
-                          src={getEmbedUrl(editingBlockHtml) || editingBlockHtml}
-                          width="100%"
-                          height="100%"
-                          style={{ minHeight: 360 }}
-                          frameBorder="0"
-                          allowFullScreen
-                          title="Preview do vídeo"
-                        />
-                      </div>
-                    )}
-                  </>
-                )}
-
-                {/* ── Image Edit ── */}
-                {editingBlockType === 'image' && (
-                  <div className="flex-1 overflow-auto space-y-6">
-                    <div>
-                      <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-2">URL da Imagem</div>
-                      <input
-                        autoFocus
-                        value={editingBlockPayload?.url || ''}
-                        onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, url: e.target.value }))}
-                        className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
-                        placeholder="https://exemplo.com/imagem.jpg"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-2">Largura (ex: 100%, 500px)</div>
-                        <input
-                          value={editingBlockPayload?.width || ''}
-                          onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, width: e.target.value }))}
-                          className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
-                          placeholder="Ex: 500px ou 100%"
-                        />
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-2">Alinhamento</div>
-                        <select
-                          value={editingBlockPayload?.align || 'center'}
-                          onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, align: e.target.value }))}
-                          className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
-                        >
-                          <option value="left">Esquerda</option>
-                          <option value="center">Centro</option>
-                          <option value="right">Direita</option>
-                        </select>
-                      </div>
-                    </div>
-                    {editingBlockPayload?.url && (
-                      <div className="mt-4 p-4 border border-slate-200 rounded-lg bg-slate-50 flex items-center justify-center">
-                        <img src={editingBlockPayload.url} alt="Preview" style={{ maxWidth: '100%', maxHeight: '300px' }} />
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* ── WYSIWYG / Custom ── */}
-                {editingBlockType !== 'title' && editingBlockType !== 'video' && editingBlockType !== 'embed' && editingBlockType !== 'image' && (
-                  <>
-                    {/* Toolbar */}
-                    <div className="border border-slate-200 rounded-lg overflow-hidden shrink-0">
-                      {/* Linha 1: fonte, tamanho, cor, formatação básica */}
-                      <div className="flex flex-wrap items-center gap-1 px-2 py-1.5 bg-slate-50 border-b border-slate-200" onMouseDown={(e) => { if ((e.target as HTMLElement).tagName !== 'SELECT' && (e.target as HTMLElement).tagName !== 'INPUT') e.preventDefault(); }}>
-                        {/* Tipo de fonte */}
-                        <select
-                          className="h-7 text-xs border border-slate-200 rounded px-1 bg-white"
-                          defaultValue="inherit"
-                          onChange={(e) => { execCommand('fontName', e.target.value); }}
-                        >
-                          <option value="inherit">Fonte padrão</option>
-                          <option value="Arial">Arial</option>
-                          <option value="Georgia">Georgia</option>
-                          <option value="Times New Roman">Times New Roman</option>
-                          <option value="Courier New">Courier New</option>
-                          <option value="Verdana">Verdana</option>
-                          <option value="Trebuchet MS">Trebuchet MS</option>
-                        </select>
-
-                        {/* Tamanho */}
-                        <select
-                          className="h-7 text-xs border border-slate-200 rounded px-1 bg-white"
-                          defaultValue="3"
-                          onChange={(e) => { execCommand('fontSize', e.target.value); }}
-                        >
-                          <option value="1">8px</option>
-                          <option value="2">10px</option>
-                          <option value="3">12px</option>
-                          <option value="4">14px</option>
-                          <option value="5">18px</option>
-                          <option value="6">24px</option>
-                          <option value="7">36px</option>
-                        </select>
-
-                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
-
-                        {/* Cor da fonte */}
-                        <label className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer h-7 px-1.5 border border-slate-200 rounded bg-white hover:bg-slate-50">
-                          <span className="font-bold text-sm" style={{ textShadow: '0 1px 0 rgba(0,0,0,.1)' }}>A</span>
-                          <span className="text-[10px]">Cor</span>
-                          <input
-                            type="color"
-                            className="w-0 h-0 opacity-0 absolute"
-                            onChange={(e) => { execCommand('foreColor', e.target.value); }}
-                          />
-                        </label>
-
-                        {/* Cor de fundo */}
-                        <label className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer h-7 px-1.5 border border-slate-200 rounded bg-white hover:bg-slate-50">
-                          <span className="text-sm">🖊</span>
-                          <span className="text-[10px]">Destaque</span>
-                          <input
-                            type="color"
-                            className="w-0 h-0 opacity-0 absolute"
-                            onChange={(e) => { execCommand('hiliteColor', e.target.value); }}
-                          />
-                        </label>
-
-                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
-
-                        {/* Negrito */}
-                        <button type="button" title="Negrito (Ctrl+B)" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('bold'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 font-bold text-sm">B</button>
-                        {/* Itálico */}
-                        <button type="button" title="Itálico (Ctrl+I)" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('italic'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 italic text-sm">I</button>
-                        {/* Sublinhado */}
-                        <button type="button" title="Sublinhado (Ctrl+U)" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('underline'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 underline text-sm">U</button>
-                        {/* Tachado */}
-                        <button type="button" title="Tachado" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('strikethrough'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 line-through text-sm">S</button>
-
-                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
-
-                        {/* Alinhamentos */}
-                        <button type="button" title="Alinhar à esquerda" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('justifyLeft'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">⬱</button>
-                        <button type="button" title="Centralizar" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('justifyCenter'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">≡</button>
-                        <button type="button" title="Alinhar à direita" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('justifyRight'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">⬰</button>
-                        <button type="button" title="Justificado" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('justifyFull'); }}
-                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-[10px]">Justif.</button>
-
-                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
-
-                        {/* Listas */}
-                        <button
-                          type="button"
-                          title="Lista com marcadores"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            execCommand('insertUnorderedList');
-                          }}
-                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-xs gap-1">• Lista</button>
-                        <button
-                          type="button"
-                          title="Lista numerada"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            execCommand('insertOrderedList');
-                          }}
-                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-xs gap-1">1. Lista</button>
-
-                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
-
-                        {/* Recuo */}
-                        <button type="button" title="Aumentar recuo" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('indent'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">→</button>
-                        <button type="button" title="Diminuir recuo" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('outdent'); }}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-sm">←</button>
-
-                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
-
-                        {/* Link */}
-                        <button type="button" title="Inserir link" onMouseDown={(e) => e.preventDefault()} onClick={() => { const url = window.prompt('URL do link:'); if (url) { execCommand('createLink', url); } }}
-                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-xs">🔗 Link</button>
-                        <button type="button" title="Remover link" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('unlink'); }}
-                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-xs">✂ Link</button>
-
-                        <div className="w-px h-5 bg-slate-200 mx-0.5" />
-
-                        {/* Desfazer / Refazer */}
-                        <button
-                          type="button"
-                          title="Desfazer (Ctrl+Z)"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={handleUndo}
-                          disabled={!canUndo()}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          <Undo2 size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          title="Refazer (Ctrl+Y / Ctrl+Shift+Z)"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={handleRedo}
-                          disabled={!canRedo()}
-                          className="h-7 w-7 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-faktory-blue/10 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          <Redo2 size={14} />
-                        </button>
-
-                        {/* Limpar formatação */}
-                        <button type="button" title="Limpar formatação" onMouseDown={(e) => e.preventDefault()} onClick={() => { execCommand('removeFormat'); }}
-                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-red-50 text-red-400 text-xs ml-1">✕ Form.</button>
-
-                        {/* Toggle fonte */}
-                        <button type="button" onClick={() => {
-                          // Sync WYSIWYG content to state before switching to source view
-                          if (useWysiwygMode && wysiwygRef.current) {
-                            setEditingBlockHtml(wysiwygRef.current.innerHTML);
-                          }
-                          setUseWysiwygMode(prev => !prev);
-                        }}
-                          className="h-7 px-1.5 flex items-center justify-center border border-slate-200 rounded bg-white hover:bg-slate-100 text-xs text-slate-500 ml-auto">
-                          {useWysiwygMode ? '</> Fonte' : '📝 Visual'}
-                        </button>
-                      </div>
-
-                      {/* Área editável */}
-                      {useWysiwygMode ? (
-                        <div
-                          ref={wysiwygRef}
-                          contentEditable
-                          suppressContentEditableWarning
-                          onMouseUp={() => saveSelection()}
-                          onKeyUp={() => saveSelection()}
-                          onInput={(e) => {
-                            handleWysiwygInput((e.currentTarget as HTMLDivElement).innerHTML);
-                            saveSelection();
-                          }}
-                          className="w-full p-5 text-sm outline-none bg-white rich-text-editor"
-                          style={{ minHeight: 380, lineHeight: 1.7 }}
-                          dir="ltr"
-                        />
-                      ) : (
-                        <textarea
-                          value={editingBlockHtml}
-                          onChange={(e) => handleEditorValueChange(e.target.value)}
-                          className="w-full p-4 font-mono text-sm outline-none bg-white resize-none"
-                          style={{ minHeight: 380 }}
-                          dir="ltr"
-                          spellCheck={false}
-                        />
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex justify-end gap-2 shrink-0">
-                <button onClick={cancelEditBlock} className="px-4 py-2 bg-white border border-slate-200 rounded hover:bg-slate-50">Cancelar</button>
-                <button onClick={saveEditedBlock} className="px-4 py-2 bg-faktory-blue text-white rounded font-bold hover:bg-faktory-blue/90">Salvar</button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <BlockEditorModal
+        show={showBlockEditor}
+        wysiwyg={wysiwyg}
+        cancelEditBlock={cancelEditBlock}
+        saveEditedBlock={saveEditedBlock}
+        getEmbedUrl={getEmbedUrl}
+        triggerImageUpload={() => imageInputRef.current?.click()}
+      />
       {/* Toast */}
       {toast && (
         <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-4 py-2 rounded shadow-lg z-50">{toast}</div>

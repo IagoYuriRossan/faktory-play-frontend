@@ -43,6 +43,13 @@ export interface Subetapa {
   title?: string;
   components?: Component[];
   imageUrl?: string;
+  videoUrl?: string;
+  videoOptions?: {
+    autoplay?: boolean;
+    loop?: boolean;
+    controls?: boolean;
+    subtitlesUrl?: string;
+  };
 }
 
 export interface Etapa {
@@ -51,6 +58,13 @@ export interface Etapa {
   components?: Component[];
   subetapas?: Subetapa[];
   imageUrl?: string;
+  videoUrl?: string;
+  videoOptions?: {
+    autoplay?: boolean;
+    loop?: boolean;
+    controls?: boolean;
+    subtitlesUrl?: string;
+  };
 }
 
 export interface Module {
