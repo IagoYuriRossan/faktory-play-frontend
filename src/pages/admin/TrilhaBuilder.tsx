@@ -41,6 +41,8 @@ export default function TrilhaBuilder() {
   const [dragLessonOnModuleId, setDragLessonOnModuleId] = useState<string | null>(null);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<Record<string, { file: File; moduleId: string; etapaId: string }>>({});
+  const isMainImageUploadRef = useRef(false);
 
   // ── Extracted hooks ──
   const trail = useTrailData();
@@ -213,68 +215,304 @@ export default function TrilhaBuilder() {
     showToast('Aula renomeada');
   };
 
+  const handleManualSave = async () => {
+    if (saving) return;
+    
+    let currentData = { ...trailData };
+    const filesToUpload = Object.entries(pendingFiles);
+    
+    if (filesToUpload.length > 0) {
+      setSaving(true);
+      setImageUploading(true);
+      showToast(`Enviando ${filesToUpload.length} imagens...`);
+      
+      try {
+        for (const [blockId, info] of filesToUpload) {
+          const { imageUrl, publicId } = await trilhaBuilderApi.uploadEtapaImage(
+            trailId,
+            info.moduleId,
+            info.etapaId,
+            info.file,
+            (pct) => setUploadProgress(pct)
+          );
+          
+          if (blockId === 'MAIN_IMAGE') {
+            currentData = updateMainImageUrl(currentData, info.etapaId, imageUrl, publicId);
+          } else {
+            currentData = replaceUrlInContent(currentData, blockId, imageUrl, publicId);
+          }
+        }
+        setPendingFiles({});
+        setTrailData(currentData);
+        setImageUploading(false);
+      } catch (err) {
+        console.error('Upload failed during save:', err);
+        showToast('Erro no upload das imagens. Tente salvar novamente.');
+        setSaving(false);
+        setImageUploading(false);
+        return;
+      }
+    }
+    
+    await handleSave(currentData);
+  };
+
+  const replaceUrlInContent = (data: typeof trailData, blockId: string, newUrl: string, publicId?: string) => {
+    const updateEtapas = (etapas: Lesson[]): Lesson[] => etapas.map(e => {
+      let newLesson = { ...e };
+      if (e.content) {
+        const blocks = parseBlocks(e.content);
+        const b = blocks.find(x => x.id === blockId);
+        if (b) {
+          let newHtml = b.html.replace(/src="[^"]*"/, `src="${newUrl}"`);
+          if (publicId) {
+            if (newHtml.includes('data-public-id=')) {
+              newHtml = newHtml.replace(/data-public-id="[^"]*"/, `data-public-id="${publicId}"`);
+            } else {
+              newHtml = newHtml.replace('<img ', `<img data-public-id="${publicId}" `);
+            }
+          }
+          const newBlockMarkup = `<!-- block:${b.type}:${b.id} -->\n${newHtml}\n<!-- /block:${b.type}:${b.id} -->`;
+          newLesson.content = e.content.slice(0, b.index) + newBlockMarkup + e.content.slice(b.index + b.length);
+        }
+      }
+      if (e.components) {
+        newLesson.components = e.components.map(c => {
+          if (c.id === blockId) {
+            return { ...c, payload: { ...c.payload, url: newUrl, publicId } };
+          }
+          return c;
+        });
+      }
+      if (e.subetapas) {
+        newLesson.subetapas = updateEtapas(e.subetapas as any);
+      }
+      return newLesson;
+    });
+
+    const updateModule = (m: Module): Module => ({
+      ...m,
+      etapas: m.etapas ? (updateEtapas(m.etapas as any) as any) : undefined,
+      submodules: m.submodules ? m.submodules.map(updateModule) : undefined
+    });
+
+    return {
+      ...data,
+      modules: data.modules.map(updateModule)
+    };
+  };
+
+  const updateMainImageUrl = (data: typeof trailData, etapaId: string, newUrl: string, publicId: string) => {
+    const updateInTree = (etapas: Lesson[]): Lesson[] => etapas.map(e => {
+      if (e.id === etapaId) return { ...e, imageUrl: newUrl, imagePublicId: publicId } as any;
+      if (e.subetapas) return { ...e, subetapas: updateInTree(e.subetapas as any) } as any;
+      return e;
+    });
+    const updateInModules = (modules: Module[]): Module[] => modules.map(m => ({
+      ...m,
+      etapas: m.etapas ? (updateInTree(m.etapas as any) as any) : undefined,
+      submodules: m.submodules ? updateInModules(m.submodules) : undefined
+    }));
+    return { ...data, modules: updateInModules(data.modules) };
+  };
+
   const cancelEditLesson = () => {
     setEditingLessonId(null); setEditingLessonTitle(''); setEditingLessonParentId(null);
   };
 
   // ── Image upload ──
-  const handleImageFile = (file: File) => {
+  const handleImageFile = async (file: File) => {
     if (id && activeModuleId && activeLessonId) {
-      setImageUploading(true); setUploadProgress(0);
-      (async () => {
-        let xhr: XMLHttpRequest | null = null;
-        try {
-          const user = auth.currentUser;
-          const token = user ? await user.getIdToken() : null;
-          const form = new FormData(); form.append('file', file);
-          await new Promise<void>((resolve, reject) => {
-            xhr = new XMLHttpRequest();
-            const url = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001'}/api/trails/${trailId}/modules/${activeModuleId}/etapas/${activeLessonId}/image`;
-            xhr.open('POST', url, true);
-            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-            xhr.upload.onprogress = (e) => { if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100)); };
-            xhr.onload = () => {
-              const status = xhr!.status; let data: any = null;
-              try { data = xhr!.responseText ? JSON.parse(xhr!.responseText) : null; } catch { data = xhr!.responseText; }
-              if (status >= 200 && status < 300) { 
-                const imageUrl = data?.imageUrl || data?.url; 
-                if (imageUrl) { 
-                  if (wysiwyg.editingBlockId && wysiwyg.editingBlockType === 'image') {
-                    wysiwyg.setEditingBlockPayload(prev => ({ ...prev, url: imageUrl }));
-                    showToast('Upload concluído! Imagem inserida no bloco.');
-                  } else {
-                    addBlock('image', { url: imageUrl, width: '100%', align: 'center' }); 
-                    showToast('Imagem enviada e adicionada como bloco!'); 
-                  }
-                  resolve(); 
-                  return; 
-                } 
-                reject(new Error('Resposta do servidor não continha imageUrl')); 
-                return; 
-              }
-              if (status === 413) { reject(new Error('Tamanho do arquivo excede o limite de 5MB (413)')); return; }
-              reject(new Error((data && data.message) || `Upload failed (${status})`));
-            };
-            xhr.onerror = () => reject(new Error('Erro na requisição de upload'));
-            xhr.onabort = () => reject(new Error('Upload abortado'));
-            xhr.send(form);
-          });
-          setUploadProgress(100); return;
-        } catch (err: any) {
-          console.warn('Upload falhou:', err);
-          if (err?.message?.includes('5MB')) {
-            showToast('Erro: arquivo maior que 5MB');
-          } else {
-            showToast('Erro: Upload falhou. Verifique o backend ou o terminal.');
+      const localUrl = URL.createObjectURL(file);
+
+      if (isMainImageUploadRef.current) {
+        // Se já tinha imagem, poderíamos apagar aqui, mas vamos apenas trocar a referência
+        updateLesson({ imageUrl: localUrl });
+        setPendingFiles(prev => ({
+          ...prev,
+          ['MAIN_IMAGE']: { file, moduleId: activeModuleId, etapaId: activeLessonId }
+        }));
+        setIsDirty(true);
+        showToast('Capa da aula alterada (será enviada ao salvar)');
+        isMainImageUploadRef.current = false;
+        return;
+      }
+
+      let blockId: string | null = null;
+
+      if (wysiwyg.editingBlockId && wysiwyg.editingBlockType === 'image') {
+        blockId = wysiwyg.editingBlockId;
+        
+        // Se o bloco já tinha um publicId, vamos apagar no Cloudinary antes de trocar
+        const al = getActiveLesson();
+        const comp = al?.components?.find(c => c.id === blockId);
+        const oldPublicId = comp?.payload?.publicId;
+        
+        if (oldPublicId) {
+          const ok = window.confirm('Deseja excluir a imagem antiga do servidor para substituir por esta nova?');
+          if (ok) {
+            try {
+              await trilhaBuilderApi.deleteCloudinaryImage(oldPublicId, {
+                kind: 'etapa', trailId, moduleId: activeModuleId, etapaId: activeLessonId
+              });
+            } catch (err) {
+              console.warn('Falha ao apagar imagem antiga, continuando...', err);
+            }
           }
-        } finally {
-          setImageUploading(false); setTimeout(() => setUploadProgress(0), 700);
-          try { if (xhr) { try { (xhr as any).abort(); } catch { } } } catch { }
         }
-      })();
+
+        // Atualiza a UI imediatamente com o blob local
+        if (al && al.components) {
+          const comps = al.components.map(c => 
+            c.id === blockId ? { ...c, payload: { ...c.payload, url: localUrl, publicId: undefined } } : c
+          );
+          updateLesson({ components: comps });
+        }
+        
+        wysiwyg.setEditingBlockPayload(prev => ({ ...prev, url: localUrl }));
+      } else {
+        blockId = addBlock('image', { url: localUrl, width: '100%', align: 'center' }) || null;
+      }
+
+      if (blockId) {
+        setPendingFiles(prev => ({
+          ...prev,
+          [blockId!]: { file, moduleId: activeModuleId, etapaId: activeLessonId }
+        }));
+        setIsDirty(true);
+        showToast('Imagem adicionada (será enviada ao salvar)');
+      }
       return;
     }
     showToast('Erro: Nenhuma aula selecionada para upload.');
+  };
+
+  const handleRemoveBlockWithCloudinary = async (blockId: string) => {
+    alert('Função handleRemoveBlockWithCloudinary iniciada para o bloco: ' + blockId);
+    if (!activeLesson) return;
+    
+    const content = activeLesson.content || '';
+    const blocks = parseBlocks(content);
+    const b = blocks.find(x => x.id === blockId);
+    
+    // Also look in components
+    const comp = activeLesson.components?.find(c => c.id === blockId);
+    
+    if (b || comp) {
+      let publicId: string | null = null;
+      
+      // 1. Try component payload
+      if (comp && comp.payload?.publicId) {
+        publicId = comp.payload.publicId;
+        console.info('[Cloudinary] Encontrado publicId no payload do componente:', publicId);
+      } 
+      // 2. Try HTML attribute
+      else if (b) {
+        const attrMatch = b.html.match(/data-public-id=["']([^"']+)["']/);
+        if (attrMatch) {
+          publicId = attrMatch[1];
+          console.info('[Cloudinary] Encontrado publicId via atributo HTML:', publicId);
+        }
+      }
+
+      // 3. Fallback: URL extraction (from comp or block)
+      if (!publicId) {
+        const url = comp?.payload?.url || (b ? b.html.match(/src=["']?([^"'\s>]+)["']?/)?.[1] : null);
+        if (url && url.includes('cloudinary.com')) {
+          console.info('[Cloudinary] Tentando extrair ID da URL:', url);
+          const parts = url.split('/upload/');
+          if (parts.length > 1) {
+            let path = parts[1].replace(/^v\d+\//, ''); 
+            const lastDot = path.lastIndexOf('.');
+            publicId = lastDot > -1 ? path.substring(0, lastDot) : path;
+          }
+        }
+      }
+
+      if (publicId) {
+        console.info('[Cloudinary] Iniciando deleção do ID:', publicId);
+        // Alerta de debug para o usuário confirmar o que foi capturado
+        alert(`Sistema identificou esta imagem no Cloudinary.\nID: ${publicId}\n\nClique em OK para tentar apagar no servidor.`);
+        
+        const ok = window.confirm(`Deseja excluir esta imagem permanentemente do servidor?\nID: ${publicId}`);
+        if (!ok) return;
+
+        try {
+          setSaving(true);
+          const res: any = await trilhaBuilderApi.deleteCloudinaryImage(publicId, {
+            kind: 'etapa',
+            trailId,
+            moduleId: activeModuleId!,
+            etapaId: activeLessonId!
+          });
+          console.info('[Cloudinary] Resposta da deleção:', res);
+          showToast('Imagem removida do servidor');
+        } catch (err) {
+          console.error('[Cloudinary] Erro na deleção:', err);
+          showToast('Erro ao excluir no servidor. O bloco não será removido.');
+          setSaving(false);
+          return; 
+        } finally {
+          setSaving(false);
+        }
+      } else {
+        console.warn('[Cloudinary] Não foi possível identificar o ID desta imagem no HTML:', b.html);
+      }
+    }
+    
+    if (pendingFiles[blockId]) {
+      setPendingFiles(prev => {
+        const next = { ...prev };
+        delete next[blockId];
+        return next;
+      });
+    }
+
+    removeBlockById(blockId);
+  };
+
+  const handleReplaceImage = (blockId: string) => {
+    wysiwyg.setEditingBlockId(blockId);
+    wysiwyg.setEditingBlockType('image');
+    imageInputRef.current?.click();
+  };
+
+  const handleRemoveMainImage = async () => {
+    if (!activeLesson || !activeLesson.imageUrl) return;
+
+    // Check if it has a publicId (might be stored in a field or we extract from URL)
+    let publicId = (activeLesson as any).imagePublicId;
+    if (!publicId && activeLesson.imageUrl.includes('cloudinary.com')) {
+      const parts = activeLesson.imageUrl.split('/upload/');
+      if (parts.length > 1) {
+        let path = parts[1].replace(/^v\d+\//, '');
+        publicId = path.split('.')[0];
+      }
+    }
+
+    if (publicId) {
+      const ok = window.confirm('Excluir imagem de capa da aula permanentemente?');
+      if (!ok) return;
+
+      try {
+        setSaving(true);
+        await trilhaBuilderApi.deleteCloudinaryImage(publicId, {
+          kind: 'etapa',
+          trailId,
+          moduleId: activeModuleId!,
+          etapaId: activeLessonId!
+        });
+        showToast('Capa removida');
+      } catch (err) {
+        showToast('Erro ao remover no servidor');
+        setSaving(false);
+        return;
+      } finally {
+        setSaving(false);
+      }
+    }
+
+    updateLesson({ imageUrl: '', imagePublicId: '' } as any);
   };
 
   const activeLesson = getActiveLesson() as Lesson | null;
@@ -697,7 +935,7 @@ export default function TrilhaBuilder() {
                       <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, -1); }} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Mover para cima"><ChevronUp size={11} /></button>
                       <button onClick={(e) => { e.stopPropagation(); moveBlockById(b.id, 1); }} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Mover para baixo"><ChevronDown size={11} /></button>
                       <div className="w-px h-3 bg-slate-200" />
-                      <button onClick={(e) => { e.stopPropagation(); removeBlockById(b.id); }} className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600" title="Remover"><Trash2 size={11} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); handleRemoveBlockWithCloudinary(b.id); }} className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600" title="Remover"><Trash2 size={11} /></button>
                     </div>
                   </div>
                 )}
@@ -846,7 +1084,7 @@ export default function TrilhaBuilder() {
             )}
           </div>
           <button
-            onClick={handleSave}
+            onClick={handleManualSave}
             disabled={saving}
             className="px-6 py-1.5 bg-faktory-blue text-white rounded font-bold text-xs hover:bg-[#2c6a9a] transition-all flex items-center gap-2 disabled:opacity-50"
           >
@@ -989,10 +1227,16 @@ export default function TrilhaBuilder() {
 
                   <div className="absolute top-2 right-2 flex gap-2 z-20">
                     <button
-                      onClick={() => imageInputRef.current?.click()}
-                      className="px-2 py-1 bg-white border rounded text-xs"
+                      onClick={() => { isMainImageUploadRef.current = true; imageInputRef.current?.click(); }}
+                      className="px-2 py-1 bg-white border rounded text-xs font-bold hover:bg-slate-50 transition-colors"
                       title="Substituir imagem"
                     >Substituir</button>
+
+                    <button
+                      onClick={handleRemoveMainImage}
+                      className="px-2 py-1 bg-white border border-red-100 text-red-500 rounded text-xs font-bold hover:bg-red-50 transition-colors"
+                      title="Remover imagem"
+                    >Remover</button>
 
                     <button
                       onClick={() => {
@@ -1272,6 +1516,8 @@ export default function TrilhaBuilder() {
                     updateLesson={updateLesson} 
                     showToast={showToast} 
                     blockEditor={blockEditor}
+                    handleRemoveBlock={handleRemoveBlockWithCloudinary}
+                    handleReplaceImage={handleReplaceImage}
                   />
 
                   {/* Quiz Section */}
