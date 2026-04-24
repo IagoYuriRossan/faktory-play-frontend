@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { GripVertical, Copy, Pencil, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { GripVertical, Copy, Pencil, Trash2, ChevronUp, ChevronDown, RefreshCw } from 'lucide-react';
 import { Etapa, Component } from '../../../../@types/index';
 import { getEmbedUrl } from '../utils/contentBlocks';
 
@@ -8,14 +8,16 @@ interface ContentAreaProps {
   updateLesson: (updates: Partial<Etapa>) => void;
   showToast: (msg: string) => void;
   blockEditor: any; // Returned from useBlockEditor
+  handleRemoveBlock: (id: string) => void;
+  handleReplaceImage: (id: string) => void;
 }
 
-export function ContentArea({ activeLesson, updateLesson, showToast, blockEditor }: ContentAreaProps) {
+export function ContentArea({ activeLesson, updateLesson, showToast, blockEditor, handleRemoveBlock, handleReplaceImage }: ContentAreaProps) {
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
 
   const {
-    moveBlockById, reorderBlock, duplicateBlockById, removeBlockById, editBlockById
+    moveBlockById, reorderBlock, duplicateBlockById, editBlockById
   } = blockEditor;
 
   const components = activeLesson.components ? [...activeLesson.components].sort((a, b) => (a.order || 0) - (b.order || 0)) : [];
@@ -64,13 +66,16 @@ export function ContentArea({ activeLesson, updateLesson, showToast, blockEditor
                   {comp.type.toUpperCase()}
                 </div>
                 <div className="flex items-center gap-0.5 ml-2">
-                  <button onClick={() => editBlockById(comp.id)} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue"><Pencil size={13} /></button>
-                  <button onClick={() => duplicateBlockById(comp.id)} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue"><Copy size={13} /></button>
+                  <button onClick={() => editBlockById(comp.id)} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Editar"><Pencil size={13} /></button>
+                  {comp.type === 'image' && (
+                    <button onClick={() => handleReplaceImage(comp.id)} className="p-1 rounded hover:bg-slate-100 text-faktory-blue" title="Substituir Imagem"><RefreshCw size={13} /></button>
+                  )}
+                  <button onClick={() => duplicateBlockById(comp.id)} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue" title="Duplicar"><Copy size={13} /></button>
                   <div className="w-px h-4 bg-slate-200 mx-0.5" />
                   <button onClick={() => moveBlockById(comp.id, -1)} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue"><ChevronUp size={13} /></button>
                   <button onClick={() => moveBlockById(comp.id, 1)} className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue"><ChevronDown size={13} /></button>
                   <div className="w-px h-4 bg-slate-200 mx-0.5" />
-                  <button onClick={() => removeBlockById(comp.id)} className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600"><Trash2 size={13} /></button>
+                  <button onClick={() => handleRemoveBlock(comp.id)} className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600"><Trash2 size={13} /></button>
                 </div>
               </div>
             )}
