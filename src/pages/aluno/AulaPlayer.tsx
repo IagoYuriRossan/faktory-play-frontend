@@ -392,6 +392,9 @@ export default function AlunoAulaPlayer() {
   }
 
   const currentModule = trail.modules.find(m => m.etapas.some(l => l.id === currentLesson.id));
+  const quizComponent = currentLesson.components?.find(c => c.type === 'quiz');
+  const effectiveQuestionnaireId: string | undefined =
+    quizComponent?.payload?.questionnaireId || currentLesson.questionnaireId;
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -510,42 +513,88 @@ export default function AlunoAulaPlayer() {
               </div>
             </div>
 
-            {/* Video Section */}
-            {currentLesson.videoUrl && (
-              <div className="mb-12 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl ring-1 ring-slate-200">
-                <iframe
-                  src={getEmbedUrl(currentLesson.videoUrl)}
-                  className="w-full h-full"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                />
+            {/* Dynamic Components (new system) */}
+            {currentLesson.components && currentLesson.components.length > 0 ? (
+              <div className="space-y-8">
+                {[...currentLesson.components]
+                  .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                  .map((comp) => {
+                    if (comp.type === 'text') {
+                      return (
+                        <div key={comp.id} className="prose prose-slate max-w-none">
+                          <div
+                            className="rich-text-content"
+                            dangerouslySetInnerHTML={{ __html: comp.payload.html || '' }}
+                          />
+                        </div>
+                      );
+                    }
+                    if ((comp.type === 'video' || comp.type === 'iframe') && comp.payload.url) {
+                      return (
+                        <div key={comp.id} className="aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl ring-1 ring-slate-200">
+                          <iframe
+                            src={getEmbedUrl(comp.payload.url)}
+                            className="w-full h-full"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowFullScreen
+                          />
+                        </div>
+                      );
+                    }
+                    if (comp.type === 'image' && comp.payload.url) {
+                      return (
+                        <div key={comp.id} style={{ textAlign: (comp.payload.align as any) || 'center' }}>
+                          <img
+                            src={comp.payload.url}
+                            alt={comp.payload.alt || ''}
+                            style={{ width: comp.payload.width || '100%', maxWidth: '100%' }}
+                            className="rounded inline-block"
+                          />
+                        </div>
+                      );
+                    }
+                    if (comp.type === 'logo' && comp.payload.url) {
+                      return (
+                        <div key={comp.id} className="flex justify-center">
+                          <img
+                            src={comp.payload.url}
+                            alt={comp.payload.alt || 'Logo'}
+                            style={{ maxWidth: comp.payload.width || '320px', width: '100%' }}
+                            className="h-auto"
+                          />
+                        </div>
+                      );
+                    }
+                    // quiz components are handled in the section below
+                    return null;
+                  })}
               </div>
+            ) : (
+              /* Fallback for old-format lessons without components[] */
+              <>
+                {currentLesson.videoUrl && (
+                  <div className="mb-8 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl ring-1 ring-slate-200">
+                    <iframe
+                      src={getEmbedUrl(currentLesson.videoUrl)}
+                      className="w-full h-full"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                )}
+                {currentLesson.content && (
+                  <div className="prose prose-slate max-w-none">
+                    <div
+                      className="rich-text-content"
+                      dangerouslySetInnerHTML={{ __html: currentLesson.content }}
+                    />
+                  </div>
+                )}
+              </>
             )}
 
-            {/* Main Image (Faktory Logo) */}
-            <div className="mb-12 flex justify-center">
-              <div className="max-w-xl w-full">
-                <img
-                  src="https://faktory.com.br/wp-content/uploads/2023/06/Logo-Faktory-Softwares-Horizontal.png"
-                  alt="Faktory Softwares"
-                  className="w-full h-auto"
-                  referrerPolicy="no-referrer"
-                />
-                <div className="mt-4 text-center">
-                  <h2 className="text-xl font-bold text-slate-500 uppercase tracking-widest">Uma empresa <span className="text-slate-800">Esquadgroup</span></h2>
-                </div>
-              </div>
-            </div>
-
-            <div className="prose prose-slate max-w-none">
-              <div
-                className="text-slate-600 text-sm leading-relaxed space-y-6 rich-text-content"
-                dangerouslySetInnerHTML={{ __html: currentLesson.content }}
-              />
-            </div>
-
-            {/* Quiz Section: if lesson links to backend questionnaire use that flow, otherwise fallback to local quiz */}
-            {currentLesson.questionnaireId ? (
+            {/* Quiz Section: check quiz components first, then lesson-level questionnaireId */}
+            {effectiveQuestionnaireId ? (
               <div className="mt-16 bg-slate-50 p-8 rounded-2xl border border-slate-100">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 bg-faktory-blue/10 text-faktory-blue rounded-xl flex items-center justify-center">
@@ -584,7 +633,7 @@ export default function AlunoAulaPlayer() {
                         </div>
                         <div className="p-4">
                           <QuestionnaireRunner
-                            questionnaireId={currentLesson.questionnaireId}
+                            questionnaireId={effectiveQuestionnaireId!}
                             projectId={trail.id}
                             userId={user.id}
                             onClose={() => { setShowQuestionnaire(false); setAttemptId(null); setSubmitResult(null); setAnswersMap({}); }}
