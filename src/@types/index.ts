@@ -232,3 +232,42 @@ export interface CompanyReportResponse {
   projectEndDate: string | null;     // ISO 8601
   trails: ReportTrail[];
 }
+
+// ── Relatório de progresso por trilha (users-report) ────────────────────────
+
+/** Progresso de um usuário em um módulo específico */
+export interface ModuleProgressEntry {
+  moduleId: string;
+  title: string;
+  /** 0–100 — % de etapas concluídas neste módulo */
+  progress: number;
+  completedLessons: number;
+  totalLessons: number;
+}
+
+/** Progresso completo de um usuário em uma trilha */
+export interface UserTrailReport {
+  userId: string;
+  name: string;
+  email: string;
+  /** ISO 8601 — quando iniciou a trilha */
+  startedAt: string | null;
+  /** ISO 8601 — último acesso */
+  lastAccess: string | null;
+  /** ISO 8601 — quando concluiu (null se ainda não concluiu) */
+  completedAt: string | null;
+  status: UserTrailStatus;
+  /** 0–100 — progresso total da trilha */
+  totalProgress: number;
+  moduleProgress: ModuleProgressEntry[];
+}
+
+/** Resposta de GET /api/companies/:companyId/trails/:trailId/users-report */
+export interface UsersReportResponse {
+  companyId: string;
+  trailId: string;
+  trailTitle: string;
+  /** ISO 8601 — momento em que o relatório foi gerado */
+  generatedAt: string;
+  users: UserTrailReport[];
+}
