@@ -88,7 +88,7 @@ export const trilhaBuilderApi = {
     );
   },
 
-  // ── Upload de imagem (presigned URL via GCS) ──
+  // ── Upload de imagem (Cloudinary) ──
   async uploadEtapaImage(
     trailId: string,
     moduleId: string,
@@ -96,33 +96,74 @@ export const trilhaBuilderApi = {
     file: File,
     onProgress?: (pct: number) => void
   ): Promise<string> {
-    // 1. Get presigned URL
-    const presign = await api.post<PresignResponse>(
-      `/api/trails/${trailId}/modules/${moduleId}/etapas/${etapaId}/image/presign`,
-      { contentType: file.type, size: file.size }
-    );
+    const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
+    const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET;
 
-    // 2. Upload directly to GCS
-    await new Promise<void>((resolve, reject) => {
+    if (!cloudName || !uploadPreset) {
+      throw new Error('Variaveis VITE_CLOUDINARY_CLOUD_NAME e VITE_CLOUDINARY_UPLOAD_PRESET nao configuradas no .env');
+    }
+
+    const folder = `trails/${trailId}/modules/${moduleId}/etapas/${etapaId}`;
+    const url = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', uploadPreset);
+    formData.append('folder', folder);
+
+    // 1. Upload unsigned para Cloudinary
+    const cloudData = await new Promise<any>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('PUT', presign.uploadUrl, true);
-      xhr.setRequestHeader('Content-Type', file.type);
+      xhr.open('POST', url, true);
       if (onProgress) {
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
         };
       }
-      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error(`Upload failed (${xhr.status})`));
-      xhr.onerror = () => reject(new Error('Upload request failed'));
-      xhr.send(file);
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch (err) {
+            reject(new Error('Invalid JSON from Cloudinary'));
+          }
+        } else {
+          let errorMsg = `Cloudinary upload failed (${xhr.status})`;
+          try {
+            const errObj = JSON.parse(xhr.responseText);
+            if (errObj.error && errObj.error.message) {
+              errorMsg = errObj.error.message;
+            }
+          } catch {}
+          reject(new Error(errorMsg));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Upload request to Cloudinary failed'));
+      xhr.send(formData);
     });
 
-    // 3. Confirm upload
-    const confirm = await api.post<ConfirmImageResponse>(
-      `/api/trails/${trailId}/modules/${moduleId}/etapas/${etapaId}/image/confirm`,
-      { filePath: presign.filePath }
-    );
+    if (!cloudData.secure_url) {
+      throw new Error('Nenhuma URL segura retornada pelo Cloudinary');
+    }
 
-    return confirm.imageUrl;
+    // 2. Confirmar ao backend
+    await api.post('/api/uploads/cloudinary/confirm', {
+      target: {
+        kind: 'etapa',
+        trailId,
+        moduleId,
+        etapaId
+      },
+      imageUrl: cloudData.secure_url,
+      publicId: cloudData.public_id,
+      bytes: cloudData.bytes,
+      format: cloudData.format
+    });
+
+    return { imageUrl: cloudData.secure_url, publicId: cloudData.public_id };
+  },
+
+  deleteCloudinaryImage(publicId: string, target?: { kind: 'etapa' | 'trail' | 'module'; trailId?: string; moduleId?: string; etapaId?: string }) {
+    return api.delete('/api/uploads/cloudinary', { publicId, target });
   },
 };
