@@ -64,6 +64,11 @@ export function useTrailData() {
   // ── Auto-save ──
   useEffect(() => {
     if (!isDirty) return;
+
+    // Skip auto-save if we have local image previews that need uploading
+    const hasLocalImages = JSON.stringify(trailData).includes('blob:');
+    if (hasLocalImages) return;
+
     const timeoutId = setTimeout(async () => {
       try {
         const finalData = { id: trailId === 'nova' ? undefined : trailId, ...trailData };
@@ -168,10 +173,11 @@ export function useTrailData() {
   }, [id]);
 
   // ── API actions ──
-  const handleSave = async () => {
+  const handleSave = async (dataToSave?: TrailData) => {
     setSaving(true);
     try {
-      const finalData = { id: trailId === 'nova' ? undefined : trailId, ...trailData };
+      const data = dataToSave || trailData;
+      const finalData = { id: trailId === 'nova' ? undefined : trailId, ...data };
       if (id && id !== 'nova') {
         try {
           await trilhaBuilderApi.updateTrail(trailId, finalData);
