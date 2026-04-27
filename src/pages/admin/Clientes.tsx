@@ -14,6 +14,8 @@ export default function AdminClientes() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const { user } = useAuthStore();
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingCompanyId, setEditingCompanyId] = useState<string | null>(null);
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -48,6 +50,38 @@ export default function AdminClientes() {
     fetchCompanies();
   }, []);
 
+  const handleOpenEditModal = (company: Company) => {
+    setIsEditing(true);
+    setEditingCompanyId(company.id);
+    setNewCompany({
+      name: company.name,
+      cnpj: company.cnpj,
+      cep: company.cep || '',
+      address: company.address || '',
+      number: company.number || '',
+      complement: company.complement || '',
+      city: company.city || '',
+      uf: company.uf || '',
+    });
+    setIsModalOpen(true);
+    setOpenMenuId(null);
+  };
+
+  const handleOpenCreateModal = () => {
+    setIsEditing(false);
+    setEditingCompanyId(null);
+    setNewCompany({ name: '', cnpj: '', cep: '', address: '', number: '', complement: '', city: '', uf: '' });
+    setIsModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setIsEditing(false);
+    setEditingCompanyId(null);
+    setFormError('');
+    setNewCompany({ name: '', cnpj: '', cep: '', address: '', number: '', complement: '', city: '', uf: '' });
+  };
+
   const handleCreateCompany = async (e: any) => {
     e.preventDefault();
     setFormError('');
@@ -62,10 +96,13 @@ export default function AdminClientes() {
       return;
     }
 
-    const cnpjExists = await validateCNPJExists(newCompany.cnpj);
-    if (!cnpjExists.valid) {
-      setFormError(cnpjExists.message);
-      return;
+    // Só validar CNPJ na API externa se não estiver editando ou se o CNPJ mudou
+    if (!isEditing) {
+      const cnpjExists = await validateCNPJExists(newCompany.cnpj);
+      if (!cnpjExists.valid) {
+        setFormError(cnpjExists.message);
+        return;
+      }
     }
 
     if (onlyDigits(newCompany.cep).length !== 8) {
@@ -75,7 +112,7 @@ export default function AdminClientes() {
     
     setCreating(true);
     try {
-      await api.post('/api/companies', {
+      const payload = {
         name: newCompany.name,
         cnpj: newCompany.cnpj,
         cep: newCompany.cep,
@@ -84,13 +121,24 @@ export default function AdminClientes() {
         complement: newCompany.complement,
         city: newCompany.city,
         uf: newCompany.uf.toUpperCase(),
-        allowedTrails: [],
-      });
-      setNewCompany({ name: '', cnpj: '', cep: '', address: '', number: '', complement: '', city: '', uf: '' });
-      setIsModalOpen(false);
+      };
+
+      if (isEditing && editingCompanyId) {
+        await api.put(`/api/companies/${editingCompanyId}`, payload);
+        showToast('success', 'Empresa atualizada com sucesso.');
+      } else {
+        await api.post('/api/companies', {
+          ...payload,
+          allowedTrails: [],
+        });
+        showToast('success', 'Empresa criada com sucesso.');
+      }
+
+      handleCloseModal();
       fetchCompanies();
-    } catch (error) {
-      console.error('Error creating company:', error);
+    } catch (error: any) {
+      console.error('Error saving company:', error);
+      showToast('error', error?.message || 'Erro ao salvar empresa.');
     } finally {
       setCreating(false);
     }
@@ -109,7 +157,7 @@ export default function AdminClientes() {
           <p className="text-slate-500">Gerencie as empresas e seus acessos às trilhas.</p>
         </div>
         <button 
-          onClick={() => setIsModalOpen(true)}
+          onClick={handleOpenCreateModal}
           className="bg-faktory-blue text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 hover:bg-[#2c6a9a] transition-colors shadow-lg shadow-blue-100"
         >
           <Plus size={20} />
@@ -134,7 +182,7 @@ export default function AdminClientes() {
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
         {loading ? (
           <div className="p-12 flex justify-center">
             <Loader2 className="animate-spin text-faktory-blue" size={32} />
@@ -197,6 +245,12 @@ export default function AdminClientes() {
                           {openMenuId === company.id && (
                             <div className="absolute right-0 mt-2 w-44 bg-white border border-slate-200 rounded-md shadow-lg z-50">
                               <Link to={`/admin/clientes/${company.id}`} className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Visualizar</Link>
+                              <button
+                                className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                                onClick={() => handleOpenEditModal(company)}
+                              >
+                                Editar
+                              </button>
                               {user?.role === 'superadmin' && (
                                 <button
                                   className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-slate-50"
@@ -241,8 +295,10 @@ export default function AdminClientes() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-slate-800">Cadastrar Nova Empresa</h2>
-              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600">
+              <h2 className="text-xl font-bold text-slate-800">
+                {isEditing ? 'Editar Empresa' : 'Cadastrar Nova Empresa'}
+              </h2>
+              <button onClick={handleCloseModal} className="text-slate-400 hover:text-slate-600">
                 <X size={20} />
               </button>
             </div>
@@ -362,7 +418,7 @@ export default function AdminClientes() {
               <div className="pt-4 flex gap-3">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={handleCloseModal}
                   className="flex-1 px-4 py-2 border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors"
                 >
                   Cancelar
@@ -373,7 +429,7 @@ export default function AdminClientes() {
                   className="flex-1 px-4 py-2 bg-faktory-blue text-white font-bold rounded-lg hover:bg-[#2c6a9a] transition-colors shadow-lg shadow-blue-100 flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   {creating ? <Loader2 className="animate-spin" size={18} /> : <Check size={18} />}
-                  Cadastrar
+                  {isEditing ? 'Salvar' : 'Cadastrar'}
                 </button>
               </div>
             </form>

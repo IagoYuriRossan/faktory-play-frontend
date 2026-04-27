@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useAuthStore } from '../../hooks/store/useAuthStore';
 import { Search, Download, Filter, Loader2 } from 'lucide-react';
 import { api } from '../../utils/api';
 import { Enrollment, User, Company, Trail } from '../../@types';
@@ -14,6 +15,7 @@ interface ReportItem {
 }
 
 export default function AdminRelatorios() {
+  const { user } = useAuthStore();
   const [reports, setReports] = useState<ReportItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -24,12 +26,19 @@ export default function AdminRelatorios() {
   useEffect(() => {
     async function fetchReports() {
       try {
-        const [enrollments, users, companies, trails] = await Promise.all([
+        const [enrollments, companies, trails] = await Promise.all([
           api.get<any[]>('/api/reports'),
-          api.get<User[]>('/api/users'),
           api.get<Company[]>('/api/companies'),
           api.get<Trail[]>('/api/trails'),
         ]);
+
+        // Buscar apenas os usuários presentes nas enrollments usando endpoint batch otimizado
+        const userIds = Array.from(new Set(enrollments.map((e: any) => e.userId)));
+        
+        // Usar endpoint batch (aceita até 100 uids por chamada)
+        const users = userIds.length > 0 
+          ? await api.post<User[]>('/api/users/batch', { uids: userIds, ...(user?.companyId ? { companyId: user.companyId } : {}) })
+          : [];
 
         const usersMap = new Map(users.map(u => [u.id, u]));
         const companiesMap = new Map(companies.map(c => [c.id, c]));

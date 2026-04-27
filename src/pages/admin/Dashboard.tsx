@@ -16,15 +16,25 @@ export default function AdminDashboard() {
   useEffect(() => {
     async function fetchStats() {
       try {
-        const [companies, users, trails] = await Promise.all([
+        const [companies, trails] = await Promise.all([
           api.get<any[]>('/api/companies'),
-          api.get<any[]>('/api/users'),
           api.get<any[]>('/api/trails'),
         ]);
 
+        let usersCount = { count: 0 };
+        try {
+          if (user?.role === 'company_admin' && user.companyId) {
+            usersCount = await api.get<{ count: number }>(`/api/companies/${user.companyId}/users/count`);
+          } else {
+            usersCount = await api.get<{ count: number }>('/api/users/count');
+          }
+        } catch (err) {
+          console.error('Error fetching users count:', err);
+        }
+
         setStats({
           companies: companies.length,
-          users: users.length,
+          users: usersCount.count || 0,
           trails: trails.length,
         });
       } catch (error) {

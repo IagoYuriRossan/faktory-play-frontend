@@ -98,7 +98,9 @@ export default function AlunoAulaPlayer() {
 
         // 2. Fetch lesson progress
         try {
-          const progress = await api.get<any[]>(`/api/users/${user.id}/progress`);
+          const progress = user?.companyId
+            ? await api.get<any[]>(`/api/companies/${user.companyId}/users/${user.id}/progress`)
+            : await api.get<any[]>(`/api/users/${user.id}/progress`);
           const completedLessons = progress.filter(p => p.completed).map(p => p.lessonId);
           const totalLessons = trailData?.modules.reduce((acc, m) => acc + m.etapas.length, 0) || 1;
           const progressPct = Math.round((completedLessons.length / totalLessons) * 100);
@@ -171,9 +173,15 @@ export default function AlunoAulaPlayer() {
         const newProgress = Math.round((newCompletedLessons.length / totalLessons) * 100);
 
         try {
-          await api.put(`/api/users/${user.id}/progress/${currentLesson.id}`, {
-            completed: true,
-          });
+          if (user?.companyId) {
+            await api.put(`/api/companies/${user.companyId}/users/${user.id}/progress/${currentLesson.id}`, {
+              completed: true,
+            });
+          } else {
+            await api.put(`/api/users/${user.id}/progress/${currentLesson.id}`, {
+              completed: true,
+            });
+          }
           setEnrollment(prev => prev ? {
             ...prev,
             progress: newProgress,

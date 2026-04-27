@@ -38,14 +38,14 @@ export default function EmpresaProjetos() {
     async function fetchData() {
       if (!user) return;
       try {
-        const [projects, trails, members] = await Promise.all([
+        const [projects, trails, membersData] = await Promise.all([
           api.get<Project[]>('/api/projects'),
           api.get<Trail[]>('/api/trails'),
-          api.get<UserData[]>('/api/users'),
+          api.get<{ members: UserData[] }>(`/api/companies/${user.companyId}/members`),
         ]);
 
         const trailsMap = new Map(trails.map(t => [t.id, t]));
-        const usersMap = new Map(members.map(u => [u.id, u]));
+        const usersMap = new Map((membersData.members || []).map(u => [u.id, u]));
 
         setRows(
           projects.map(p => ({

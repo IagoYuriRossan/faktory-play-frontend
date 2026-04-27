@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { api } from '../../utils/api';
+import { api, ApiError } from '../../utils/api';
+import useAssignUserTrail from '../../hooks/useAssignUserTrail';
 import { Company, User, Trail, UserRole } from '../../@types';
-import { ArrowLeft, Building2, Users, BookOpen, Link2, Mail, Trash2, Edit2, Loader2, Check, Copy, X } from 'lucide-react';
+import { ArrowLeft, Building2, Users, BookOpen, Link2, Mail, Trash2, Edit2, Loader2, Check, Copy, X, ChevronLeft, ChevronRight, Image } from 'lucide-react';
 import { cn } from '../../utils/utils';
 
 export default function AdminClienteDetail() {
@@ -37,6 +38,10 @@ export default function AdminClienteDetail() {
 
   // Toast
   const [toast, setToast] = useState('');
+  const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+  const [trailsPage, setTrailsPage] = useState(1);
+  const TRAILS_PER_PAGE = 6;
+  const { assign, unassign } = useAssignUserTrail();
 
   const handleOpenInviteModal = () => {
     setInviteEmail('');
@@ -92,9 +97,40 @@ export default function AdminClienteDetail() {
     setEditSaving(true);
     setEditError('');
     try {
-      const payload: any = { name: editName, role: editRole, allowedTrails: editAllowedTrails };
-      await api.put(`/api/users/${editingUser.id}`, payload);
+      if (!id) throw new Error('company id missing');
+
+      // Save prev state to allow rollback
+      const prevUsers = [...users];
+
+      // Optimistically update local state
       setUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, name: editName, role: editRole, allowedTrails: editAllowedTrails } as any : u));
+
+      // Persist basic fields first
+      const payload: any = { name: editName, role: editRole };
+      await api.put(`/api/companies/${id}/users/${editingUser.id}`, payload);
+
+      // Handle allowedTrails changes: compute diffs
+      const prevAllowed: string[] = ((editingUser as any).allowedTrails as string[]) || [];
+      const toAdd = editAllowedTrails.filter(t => !prevAllowed.includes(t));
+      const toRemove = prevAllowed.filter(t => !editAllowedTrails.includes(t));
+
+      // Apply assigns/unassigns; on first failure rollback optimistic state and surface toast
+      try {
+        for (const tid of toAdd) {
+          await assign(id, editingUser.id, tid, { source: 'admin' });
+        }
+        for (const tid of toRemove) {
+          await unassign(id, editingUser.id, tid);
+        }
+      } catch (err: any) {
+        console.error('Error applying allowedTrails changes:', err);
+        // rollback
+        setUsers(prevUsers);
+        setEditError(err?.message || 'Erro ao atribuir trilhas. Alterações revertidas.');
+        showToast(err?.message || 'Erro ao atribuir trilhas. Alterações revertidas.');
+        return;
+      }
+
       setEditingUser(null);
       showToast('Usuário atualizado com sucesso.');
     } catch (err: any) {
@@ -108,13 +144,29 @@ export default function AdminClienteDetail() {
     if (!deletingUser) return;
     setDeleteLoading(true);
     try {
-      await api.delete(`/api/users/${deletingUser.id}`);
+      // Backend: DELETE /api/users/:uid com cascata completa (progress, userTrails, invites)
+      // Autorização: requireAuth + requireAdmin (company_admin só pode deletar da própria empresa)
+      if (!id) throw new Error('company id missing');
+      await api.delete(`/api/companies/${id}/users/${deletingUser.id}`);
       setUsers(prev => prev.filter(u => u.id !== deletingUser.id));
       setDeletingUser(null);
-      showToast('Usuário removido.');
+      showToast('Usuário removido com sucesso.');
     } catch (err: any) {
-      showToast(err.message || 'Erro ao remover usuário.');
-      setDeletingUser(null);
+      // Se o recurso já não existir no servidor, trate como sucesso (idempotente)
+      if (err instanceof ApiError && err.status === 404) {
+        console.warn('Usuário já não existe no servidor; removendo localmente.', err);
+        setUsers(prev => prev.filter(u => u.id !== deletingUser.id));
+        setDeletingUser(null);
+        showToast('Usuário já removido no servidor — removido localmente.');
+      } else {
+        // Mostrar mais detalhes retornados pelo backend (status + mensagem), se disponíveis
+        const serverMsg = err && typeof err === 'object' && ('serverMessage' in err || 'message' in err)
+          ? `${err.status ?? ''} — ${err.serverMessage ?? err.message}`
+          : 'Erro ao remover usuário.';
+        console.error('Erro ao remover usuário (detalhes):', err);
+        showToast(serverMsg);
+        setDeletingUser(null);
+      }
     } finally {
       setDeleteLoading(false);
     }
@@ -138,26 +190,39 @@ export default function AdminClienteDetail() {
     }
   };
 
-  useEffect(() => {
-    async function fetchData() {
-      if (!id) return;
-      try {
-        const [companyData, allUsersData, trailsData] = await Promise.all([
-          api.get<Company>(`/api/companies/${id}`),
-          api.get<User[]>('/api/users'),
-          api.get<Trail[]>('/api/trails'),
-        ]);
+  // Extracted fetch so we can call it from UI (Atualizar) and on window focus
+  const fetchData = async () => {
+    if (!id) return;
+    setLoading(true);
+    try {
+      const [companyData, membersData, trailsData] = await Promise.all([
+        api.get<Company>(`/api/companies/${id}`),
+        api.get<{ members: User[]; pendingInvites?: any[] }>(`/api/companies/${id}/members`),
+        api.get<Trail[]>('/api/trails'),
+      ]);
 
-        setCompany(companyData);
-        setUsers(allUsersData.filter(u => u.companyId === id));
-        setAllTrails(trailsData);
-      } catch (error) {
-        console.error('Error fetching company detail:', error);
-      } finally {
-        setLoading(false);
-      }
+      setCompany(companyData);
+      setUsers(membersData.members ?? []);
+      setAllTrails(trailsData);
+    } catch (error) {
+      console.error('Error fetching company detail:', error);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  useEffect(() => {
+    let mounted = true;
     fetchData();
+    const onFocus = () => {
+      // refresh when window regains focus (useful when changes were made externally)
+      fetchData();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      mounted = false;
+      window.removeEventListener('focus', onFocus);
+    };
   }, [id]);
 
   const toggleTrail = async (trailId: string) => {
@@ -254,13 +319,22 @@ export default function AdminClienteDetail() {
           <div className="space-y-6">
             <div className="flex justify-between items-center">
               <h3 className="font-bold text-slate-800 text-lg">Funcionários Cadastrados</h3>
-              <button
-                onClick={handleOpenInviteModal}
-                className="bg-faktory-blue text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 hover:bg-[#2c6a9a] transition-colors shadow-lg shadow-blue-100"
-              >
-                <Link2 size={18} />
-                Gerar Link de Cadastro
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => fetchData()}
+                  disabled={loading}
+                  className="border border-slate-200 bg-white text-slate-700 px-3 py-2 rounded-md text-sm hover:bg-slate-50 disabled:opacity-60"
+                >
+                  Atualizar
+                </button>
+                <button
+                  onClick={handleOpenInviteModal}
+                  className="bg-faktory-blue text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 hover:bg-[#2c6a9a] transition-colors shadow-lg shadow-blue-100"
+                >
+                  <Link2 size={18} />
+                  Gerar Link de Cadastro
+                </button>
+              </div>
             </div>
 
             <div className="overflow-x-auto">
@@ -280,50 +354,135 @@ export default function AdminClienteDetail() {
                     </tr>
                   ) : (
                     users.map((user) => (
-                      <tr key={user.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-4 py-4 font-medium text-slate-800">{user.name}</td>
-                        <td className="px-4 py-4 text-sm text-slate-600">{user.email}</td>
-                        <td className="px-4 py-4">
-                          <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-bold uppercase rounded">Ativo</span>
-                        </td>
-                        <td className="px-4 py-4 text-right">
-                          <div className="flex items-center justify-end gap-3 text-slate-300">
-                            <div className="relative group">
-                              <button
-                                onClick={() => handleOpenEdit(user)}
-                                className="hover:text-faktory-blue transition-colors"
-                              >
-                                <Edit2 size={16} />
-                              </button>
-                              <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
-                                Editar
-                              </span>
+                      <>
+                        <tr key={user.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-4 py-4 font-medium text-slate-800">{user.name}</td>
+                          <td className="px-4 py-4 text-sm text-slate-600">{user.email}</td>
+                          <td className="px-4 py-4">
+                            <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-bold uppercase rounded">Ativo</span>
+                          </td>
+                          <td className="px-4 py-4 text-right">
+                            <div className="flex items-center justify-end gap-3 text-slate-300">
+                              <div className="relative group">
+                                <button
+                                  onClick={() => handleOpenEdit(user)}
+                                  className="hover:text-faktory-blue transition-colors"
+                                >
+                                  <Edit2 size={16} />
+                                </button>
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                                  Editar
+                                </span>
+                              </div>
+                              <div className="relative group">
+                                <button
+                                  onClick={() => setDeletingUser(user)}
+                                  className="hover:text-red-600 transition-colors"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                                  Excluir
+                                </span>
+                              </div>
+                              <div className="relative group">
+                                <button
+                                  onClick={() => handleSendPasswordReset(user)}
+                                  className="hover:text-slate-600 transition-colors"
+                                >
+                                  <Mail size={16} />
+                                </button>
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                                  Redefinir senha
+                                </span>
+                              </div>
+                              <div className="relative group">
+                                <button
+                                  onClick={() => {
+                                    if (expandedUserId === user.id) {
+                                      setExpandedUserId(null);
+                                    } else {
+                                      setExpandedUserId(user.id);
+                                      setTrailsPage(1);
+                                    }
+                                  }}
+                                  className="hover:text-slate-600 transition-colors"
+                                >
+                                  <BookOpen size={16} />
+                                </button>
+                                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                                  Ver Trilhas
+                                </span>
+                              </div>
                             </div>
-                            <div className="relative group">
-                              <button
-                                onClick={() => setDeletingUser(user)}
-                                className="hover:text-red-600 transition-colors"
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                              <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
-                                Excluir
-                              </span>
-                            </div>
-                            <div className="relative group">
-                              <button
-                                onClick={() => handleSendPasswordReset(user)}
-                                className="hover:text-slate-600 transition-colors"
-                              >
-                                <Mail size={16} />
-                              </button>
-                              <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 group-hover:opacity-100 transition-opacity">
-                                Redefinir senha
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
+                          </td>
+                        </tr>
+                        {expandedUserId === user.id && (
+                          <tr key={`${user.id}-trails`} className="bg-slate-50">
+                            <td colSpan={4} className="px-4 py-6">
+                              {((user as any).allowedTrails && (user as any).allowedTrails.length > 0) ? (
+                                (() => {
+                                  const allowedIds: string[] = (user as any).allowedTrails || [];
+                                  const total = allowedIds.length;
+                                  const start = (trailsPage - 1) * TRAILS_PER_PAGE;
+                                  const pageIds = allowedIds.slice(start, start + TRAILS_PER_PAGE);
+                                  return (
+                                    <>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                                        {pageIds.map((tid) => {
+                                          const trail = allTrails.find(t => t.id === tid);
+                                          return (
+                                            <div key={tid} className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm hover:shadow-md transition-shadow">
+                                              {trail?.image ? (
+                                                <img src={trail.image} alt={trail.title} className="w-full h-36 object-cover rounded-md mb-3" />
+                                              ) : (
+                                                <div className="w-full h-36 bg-slate-100 rounded-md mb-3 flex items-center justify-center text-slate-300">
+                                                  <Image size={36} />
+                                                </div>
+                                              )}
+                                              <div className="flex items-center justify-between mb-2">
+                                                <h4 className="font-bold text-slate-800 text-sm">{trail?.title || tid}</h4>
+                                                <span className="text-[10px] text-slate-400">Trilha</span>
+                                              </div>
+                                              <p className="text-xs text-slate-500 line-clamp-3">{trail?.description || 'Sem descrição'}</p>
+                                              <div className="pt-3 flex items-center justify-between">
+                                                <Link to={`/trails/${tid}`} className="text-faktory-blue text-sm font-bold hover:underline">Acessar trilha</Link>
+                                                <span className="text-[11px] text-slate-400">{trail?.moduleCount ?? ''}</span>
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+
+                                      {total > TRAILS_PER_PAGE && (
+                                        <div className="mt-4 flex items-center justify-center gap-4">
+                                          <button
+                                            onClick={() => setTrailsPage(p => Math.max(1, p - 1))}
+                                            disabled={trailsPage === 1}
+                                            className="px-3 py-1 rounded bg-white border disabled:opacity-50 flex items-center gap-2"
+                                          >
+                                            <ChevronLeft size={16} /> Anterior
+                                          </button>
+                                          <div className="text-sm text-slate-600">Página {trailsPage} de {Math.ceil(total / TRAILS_PER_PAGE)}</div>
+                                          <button
+                                            onClick={() => setTrailsPage(p => Math.min(Math.ceil(total / TRAILS_PER_PAGE), p + 1))}
+                                            disabled={trailsPage === Math.ceil(total / TRAILS_PER_PAGE)}
+                                            className="px-3 py-1 rounded bg-white border disabled:opacity-50 flex items-center gap-2"
+                                          >
+                                            Próxima <ChevronRight size={16} />
+                                          </button>
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()
+                              ) : (
+                                <div className="text-slate-500">Usuário não tem trilhas atribuídas.</div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </>
                     ))
                   )}
                 </tbody>

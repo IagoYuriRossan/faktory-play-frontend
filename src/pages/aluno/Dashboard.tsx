@@ -50,7 +50,9 @@ export default function AlunoDashboard() {
         const [projects, allTrails, enrollmentsData] = await Promise.all([
           api.get<any[]>('/api/projects'),
           api.get<Trail[]>('/api/trails'),
-          api.get<Enrollment[]>(`/api/users/${currentUser.id}/progress`),
+          (currentUser && (currentUser as any).companyId)
+            ? api.get<Enrollment[]>(`/api/companies/${(currentUser as any).companyId}/users/${currentUser.id}/progress`)
+            : api.get<Enrollment[]>(`/api/users/${currentUser.id}/progress`),
         ]);
 
         const projectTrailIds = projects.map((p: any) => p.trailId);

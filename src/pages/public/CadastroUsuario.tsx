@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { User as UserIcon, Mail, Lock, Eye, EyeOff, Loader2, Building2 } from 'lucide-react';
 import { auth } from '../../utils/firebase';
-import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, fetchSignInMethodsForEmail, sendPasswordResetEmail } from 'firebase/auth';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
 import { api } from '../../utils/api';
 import { User } from '../../@types';
@@ -33,9 +33,14 @@ export default function CadastroUsuario() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [providers, setProviders] = useState<string[]>([]);
+  const [showResetOption, setShowResetOption] = useState(false);
+  const [sendingReset, setSendingReset] = useState(false);
+  const [resetSent, setResetSent] = useState('');
 
   const { login } = useAuthStore();
   const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
+  const AUTO_REDIRECT_TO_PROVIDER = (import.meta.env.VITE_AUTO_REDIRECT_TO_PROVIDER || 'false') === 'true';
 
   useEffect(() => {
     if (!token) {
@@ -77,6 +82,7 @@ export default function CadastroUsuario() {
 
       if (!acceptRes.ok) {
         const data = await acceptRes.json().catch(() => ({}));
+        console.error('Invite accept failed', acceptRes.status, data);
         setError(data.message || `Erro ao aceitar convite (${acceptRes.status})`);
         return;
       }
@@ -120,13 +126,50 @@ export default function CadastroUsuario() {
         body: JSON.stringify({ email, password, name, inviteToken: token }),
       });
 
+      const data = await res.json().catch(() => ({}));
+
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         if (res.status === 409) {
-          setError('Este e-mail já está cadastrado.');
+          console.error('Register returned 409:', data);
+          try {
+            const methods = await fetchSignInMethodsForEmail(auth, email).catch(() => null);
+            if (Array.isArray(methods) && methods.length > 0) {
+              setError(`Este e-mail já está cadastrado. Métodos de login: ${methods.join(', ')}`);
+            } else {
+              setError('Este e-mail já está cadastrado.');
+            }
+          } catch (innerErr) {
+            console.error('Erro ao checar métodos de login do Firebase:', innerErr);
+            setError('Este e-mail já está cadastrado.');
+          }
         } else {
           setError(data.message || `Erro ao criar conta (${res.status})`);
         }
+        return;
+      }
+
+      // Backend may respond with a success but signal that the auth user exists without password
+      if (data && data.message === 'existing_auth_no_password') {
+        const provs = Array.isArray(data.providers) ? data.providers : [];
+        setProviders(provs);
+        setShowResetOption(true);
+
+        // Fallback: if backend didn't include providers, probe Firebase client
+        if (provs.length === 0) {
+          try {
+            const methods = await fetchSignInMethodsForEmail(auth, email).catch(() => []);
+            if (Array.isArray(methods)) setProviders(methods);
+          } catch (probeErr) {
+            console.error('Erro ao descobrir provedores via Firebase:', probeErr);
+          }
+        }
+
+        if (AUTO_REDIRECT_TO_PROVIDER && (provs || []).includes('google.com')) {
+          await handleGoogleLogin();
+          return;
+        }
+
+        setError('Já existe uma conta para este e‑mail sem senha. Entre com o provedor listado ou peça redefinição de senha.');
         return;
       }
 
@@ -140,6 +183,21 @@ export default function CadastroUsuario() {
       setError(err.message || 'Erro ao criar conta. Tente novamente.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSendReset = async () => {
+    setSendingReset(true);
+    setResetSent('');
+    setError('');
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setResetSent('Link de redefinição enviado. Verifique seu e‑mail.');
+    } catch (err: any) {
+      console.error('Erro ao enviar reset:', err);
+      setError('Não foi possível enviar o e‑mail — tente mais tarde.');
+    } finally {
+      setSendingReset(false);
     }
   };
 
@@ -285,6 +343,36 @@ export default function CadastroUsuario() {
             )}
             {googleLoading ? 'Aguarde...' : 'Entrar com Google'}
           </button>
+
+          {providers.length > 0 && (
+            <div className="space-y-2 mt-3">
+              <p className="text-sm text-slate-600">Este e‑mail já existe. Entre com:</p>
+              {providers.includes('google.com') && (
+                <button
+                  type="button"
+                  onClick={handleGoogleLogin}
+                  disabled={googleLoading}
+                  className="w-full border border-slate-200 bg-white text-slate-700 py-2.5 rounded-lg font-bold text-sm hover:bg-slate-50 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+                >
+                  {googleLoading ? <Loader2 size={16} className="animate-spin" /> : null}
+                  {googleLoading ? 'Aguarde...' : 'Entrar com Google'}
+                </button>
+              )}
+
+              {showResetOption && (
+                <button
+                  type="button"
+                  onClick={handleSendReset}
+                  disabled={sendingReset}
+                  className="w-full bg-white text-slate-700 py-2.5 rounded-lg font-medium text-sm border border-slate-200 hover:bg-slate-50 disabled:opacity-60"
+                >
+                  {sendingReset ? 'Enviando...' : 'Enviar link de redefinição'}
+                </button>
+              )}
+
+              {resetSent && <p className="text-sm text-green-600">{resetSent}</p>}
+            </div>
+          )}
         </form>
 
         <p className="text-center text-xs text-slate-400">
