@@ -447,6 +447,46 @@ Busca trilhas (consolidadas) do usuário dentro da company. Use este endpoint qu
 const resp = await fetch(`/api/companies/${companyId}/users/${uid}/trails?fields=ids`, {
   headers: { Authorization: `Bearer ${token}` }
 }).then(r => r.json());
+
+---
+
+### GET /api/companies/:companyId/users/:uid/progress
+Busca progresso detalhado (aulas) de um usuário dentro da company. Este endpoint é preferido quando o frontend está exibindo o histórico de lições do usuário no contexto da company.
+
+**Auth:** `requireAuth` + `requireCompanyAdmin` (ou `superadmin`)
+
+**Comportamento:**
+- Prefere retornar os documentos de progresso armazenados em `companies/{companyId}/users/{uid}/progress` quando presentes.
+- Se não houver dados na path company-scoped, faz fallback para `users/{uid}/progress` (compatibilidade).
+- Se nenhum dado for encontrado retorna `404`.
+
+**Resposta:**
+```typescript
+Array<{
+  lessonId: string;
+  moduleId: string | null;
+  trailId: string | null;
+  completed: boolean;
+  watchedSeconds?: number | null;
+  updatedAt: string;
+}>
+```
+
+**Exemplo:**
+```typescript
+const resp = await fetch(`/api/companies/${companyId}/users/${uid}/progress`, {
+  headers: { Authorization: `Bearer ${token}` }
+}).then(r => {
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+});
+
+console.log('Progresso do usuário:', resp);
+```
+
+**Notas:**
+- Frontend pode usar este endpoint quando estiver no contexto da company (p.ex. admin company view). Para perfis acessados fora do contexto da company, `GET /api/users/:uid/progress` permanece disponível como fallback.
+- Permissões devem ser validadas: `company_admin` só pode acessar progresso de usuários da própria empresa; `superadmin` pode acessar qualquer empresa.
 ```
 
 

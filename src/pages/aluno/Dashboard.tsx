@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
-import { api } from '../../utils/api';
+import { api, ApiError } from '../../utils/api';
 import { Trail, Enrollment } from '../../@types';
 import { BookOpen, Clock, ChevronRight, Loader2 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -50,9 +50,20 @@ export default function AlunoDashboard() {
         const [projects, allTrails, enrollmentsData] = await Promise.all([
           api.get<any[]>('/api/projects'),
           api.get<Trail[]>('/api/trails'),
-          (currentUser && (currentUser as any).companyId)
-            ? api.get<Enrollment[]>(`/api/companies/${(currentUser as any).companyId}/users/${currentUser.id}/progress`)
-            : api.get<Enrollment[]>(`/api/users/${currentUser.id}/progress`),
+          (async () => {
+            if (currentUser && (currentUser as any).companyId) {
+              try {
+                return await api.get<Enrollment[]>(`/api/companies/${(currentUser as any).companyId}/users/${currentUser.id}/progress`);
+              } catch (err: any) {
+                // Fallback to global users endpoint when company-scoped progress is not available
+                if (err instanceof ApiError && err.status === 404) {
+                  return await api.get<Enrollment[]>(`/api/users/${currentUser.id}/progress`);
+                }
+                throw err;
+              }
+            }
+            return await api.get<Enrollment[]>(`/api/users/${currentUser.id}/progress`);
+          })(),
         ]);
 
         const projectTrailIds = projects.map((p: any) => p.trailId);
