@@ -5,8 +5,10 @@ import { Layers, Loader2 } from 'lucide-react';
 
 interface Project {
   id: string;
-  clientId: string;
-  trailId: string;
+  ownerUid: string;
+  templateId?: string;
+  title: string;
+  description?: string;
   status: 'active' | 'inactive';
   createdAt: any;
 }
@@ -50,8 +52,8 @@ export default function EmpresaProjetos() {
         setRows(
           projects.map(p => ({
             project: p,
-            trail: trailsMap.get(p.trailId),
-            member: usersMap.get(p.clientId),
+            trail: p.templateId ? trailsMap.get(p.templateId) : undefined,
+            member: usersMap.get(p.ownerUid),
           }))
         );
       } catch (err) {
@@ -97,7 +99,7 @@ export default function EmpresaProjetos() {
                     <p className="font-medium text-slate-800">{member?.name || '—'}</p>
                     <p className="text-xs text-slate-400">{member?.email || ''}</p>
                   </td>
-                  <td className="px-5 py-3 text-slate-700">{trail?.title || '—'}</td>
+                  <td className="px-5 py-3 text-slate-700">{project.title || trail?.title || '—'}</td>
                   <td className="px-5 py-3">
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${
                       project.status === 'active'
