@@ -32,18 +32,22 @@ export default function useAssignUserTrail(opts?: { attempts?: number; initialDe
   const attempts = opts?.attempts ?? 5;
   const initialDelay = opts?.initialDelay ?? 500;
 
-  async function assign(companyId: string, uid: string, trailId: string, op?: { startedAt?: string; source?: string; initialProgress?: any }) {
+  async function assign(companyId: string, uid: string, trailId: string, op?: { title?: string; description?: string; startedAt?: string; source?: string; initialProgress?: any }) {
     setLoading(true);
     try {
-      const body: any = { trailId };
-      if (op?.startedAt) body.startedAt = op.startedAt;
-      if (op?.source) body.source = op.source;
-      if (op?.initialProgress) body.initialProgress = op.initialProgress;
+      const body: any = { 
+        templateId: trailId,
+        title: op?.title || 'Novo Projeto',
+        description: op?.description || '',
+      };
+      if (op?.startedAt) body.startAt = op.startedAt;
+      if (op?.source) body.metadata = { ...(body.metadata || {}), source: op.source };
+      if (op?.initialProgress) body.metadata = { ...(body.metadata || {}), initialProgress: op.initialProgress };
 
-      // POST is idempotent on backend: returns existing if already assigned
-      console.debug('[assign] starting assign', { companyId, uid, trailId });
-      const res = await retry(() => api.post(`/api/companies/${companyId}/users/${uid}/trails`, body), attempts, initialDelay, `assign ${uid}:${trailId}`);
-      console.debug('[assign] success', { companyId, uid, trailId });
+      // O novo endpoint preferido é /api/users/:uid/projects
+      console.debug('[assign] starting project creation', { uid, templateId: trailId });
+      const res = await retry(() => api.post(`/api/users/${uid}/projects`, body), attempts, initialDelay, `assign ${uid}:${trailId}`);
+      console.debug('[assign] success', { uid, trailId });
       return res;
     } finally {
       setLoading(false);
