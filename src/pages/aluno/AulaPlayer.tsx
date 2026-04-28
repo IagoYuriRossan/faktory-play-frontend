@@ -96,33 +96,40 @@ export default function AlunoAulaPlayer() {
           if (trailData.modules && trailData.modules[0]) setExpandedModules([trailData.modules[0].id]);
         }
 
-        // 2. Fetch lesson progress
+        // 2. Fetch granular progress for this trail
         try {
-          const progress = user?.companyId
-            ? await api.get<any[]>(`/api/companies/${user.companyId}/users/${user.id}/progress`)
-            : await api.get<any[]>(`/api/users/${user.id}/progress`);
-          const completedLessons = progress.filter(p => p.completed).map(p => p.lessonId);
-          const totalLessons = trailData?.modules.reduce((acc, m) => acc + m.etapas.length, 0) || 1;
+          const progressData = await api.get<{ etapas: any[]; subetapas: any[]; tasks: any[] }>(
+            `/api/users/${user.id}/progress/trail/${id}`
+          );
+          
+          const completedLessons = progressData.etapas.filter(p => p.completed).map(p => p.id);
+          const totalLessons = trailData?.modules.reduce((acc, m) => acc + (m.etapas?.length || 0), 0) || 1;
           const progressPct = Math.round((completedLessons.length / totalLessons) * 100);
+
           setEnrollment({
-            id: `${user.id}-${id}`,
+            id: `enrollment-${id}`,
             userId: user.id,
             trailId: id,
             progress: progressPct,
             completedLessons,
+            completedSubetapas: progressData.subetapas.filter(p => p.completed).map(p => p.id),
+            completedTasks: progressData.tasks.filter(p => p.completed).map(p => p.id),
             status: progressPct >= 100 ? 'completed' : progressPct > 0 ? 'in-progress' : 'not-started',
             lastAccess: new Date().toISOString(),
-          });
-        } catch {
+          } as any);
+        } catch (err) {
+          console.warn('Error fetching progress details, using defaults:', err);
           setEnrollment({
-            id: `${user.id}-${id}`,
+            id: `enrollment-${id}`,
             userId: user.id,
             trailId: id,
             progress: 0,
             completedLessons: [],
+            completedSubetapas: [],
+            completedTasks: [],
             status: 'not-started',
             lastAccess: new Date().toISOString(),
-          });
+          } as any);
         }
       } catch (error) {
         console.error('Error fetching aula data:', error);
@@ -138,6 +145,62 @@ export default function AlunoAulaPlayer() {
     setExpandedModules(prev =>
       prev.includes(moduleId) ? prev.filter(id => id !== moduleId) : [...prev, moduleId]
     );
+  };
+
+  const handleToggleLessonComplete = async (lesson: Lesson) => {
+    if (!user || !trail || !enrollment) return;
+    
+    const isCompleted = enrollment.completedLessons.includes(lesson.id);
+    const newCompleted = isCompleted 
+      ? enrollment.completedLessons.filter(id => id !== lesson.id)
+      : [...enrollment.completedLessons, lesson.id];
+
+    // Counts for backend auto-recalculation
+    const totalLessonsInTrail = trail.modules.reduce((acc, m) => acc + (m.etapas?.length || 0), 0);
+    const totalModulesInTrail = trail.modules.length;
+    
+    try {
+      await api.put(`/api/users/${user.id}/progress/${lesson.id}`, {
+        completed: !isCompleted,
+        trailId: trail.id,
+        moduleId: currentModule?.id,
+        totalLessonsInTrail,
+        totalModulesInTrail
+      });
+
+      setEnrollment(prev => prev ? {
+        ...prev,
+        completedLessons: newCompleted,
+        progress: Math.round((newCompleted.length / totalLessonsInTrail) * 100)
+      } : null);
+    } catch (err) {
+      console.error('Error toggling lesson completion:', err);
+    }
+  };
+
+  const handleToggleSubetapaComplete = async (sub: any) => {
+    if (!user || !trail || !enrollment || !currentLesson) return;
+
+    const isCompleted = (enrollment as any).completedSubetapas?.includes(sub.id);
+    const newCompleted = isCompleted
+      ? (enrollment as any).completedSubetapas.filter((id: string) => id !== sub.id)
+      : [...((enrollment as any).completedSubetapas || []), sub.id];
+
+    try {
+      await api.put(`/api/users/${user.id}/progress/${currentLesson.id}/subetapas/${sub.id}`, {
+        completed: !isCompleted,
+        trailId: trail.id,
+        moduleId: currentModule?.id,
+        totalSubetapasInEtapa: currentLesson.subetapas?.length || 1
+      });
+
+      setEnrollment(prev => prev ? {
+        ...prev,
+        completedSubetapas: newCompleted
+      } : null);
+    } catch (err) {
+      console.error('Error toggling subetapa completion:', err);
+    }
   };
 
   const getEmbedUrl = (url: string) => {
@@ -164,31 +227,19 @@ export default function AlunoAulaPlayer() {
       setShowQuizResult(true);
 
       if (isCorrect) {
-        const isAlreadyCompleted = enrollment.completedLessons.includes(currentLesson.id);
-        const newCompletedLessons = isAlreadyCompleted
-          ? enrollment.completedLessons
-          : [...enrollment.completedLessons, currentLesson.id];
-
-        const totalLessons = trail.modules.reduce((acc, m) => acc + m.etapas.length, 0);
-        const newProgress = Math.round((newCompletedLessons.length / totalLessons) * 100);
-
+        // Save as task completion
         try {
-          if (user?.companyId) {
-            await api.put(`/api/companies/${user.companyId}/users/${user.id}/progress/${currentLesson.id}`, {
-              completed: true,
-            });
-          } else {
-            await api.put(`/api/users/${user.id}/progress/${currentLesson.id}`, {
-              completed: true,
-            });
-          }
-          setEnrollment(prev => prev ? {
-            ...prev,
-            progress: newProgress,
-            completedLessons: newCompletedLessons,
-          } : null);
+          await api.put(`/api/users/${user.id}/progress/${currentLesson.id}/tasks/quiz`, {
+            completed: true,
+            trailId: trail.id,
+            moduleId: currentModule?.id,
+            score: 100
+          });
+          
+          // Also mark lesson as complete if it's primarily a quiz lesson
+          await handleToggleLessonComplete(currentLesson);
         } catch (error) {
-          console.error('Error saving progress:', error);
+          console.error('Error saving quiz progress:', error);
         }
       }
     }

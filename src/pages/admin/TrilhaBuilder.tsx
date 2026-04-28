@@ -388,78 +388,58 @@ export default function TrilhaBuilder() {
   };
 
   const handleRemoveBlockWithCloudinary = async (blockId: string) => {
-    alert('Função handleRemoveBlockWithCloudinary iniciada para o bloco: ' + blockId);
     if (!activeLesson) return;
     
     const content = activeLesson.content || '';
     const blocks = parseBlocks(content);
     const b = blocks.find(x => x.id === blockId);
-    
-    // Also look in components
     const comp = activeLesson.components?.find(c => c.id === blockId);
     
     if (b || comp) {
+      const type = comp?.type || b?.type || 'text';
       let publicId: string | null = null;
       
-      // 1. Try component payload
-      if (comp && comp.payload?.publicId) {
-        publicId = comp.payload.publicId;
-        console.info('[Cloudinary] Encontrado publicId no payload do componente:', publicId);
-      } 
-      // 2. Try HTML attribute
-      else if (b) {
-        const attrMatch = b.html.match(/data-public-id=["']([^"']+)["']/);
-        if (attrMatch) {
-          publicId = attrMatch[1];
-          console.info('[Cloudinary] Encontrado publicId via atributo HTML:', publicId);
+      // ONLY try Cloudinary for images
+      if (type === 'image') {
+        if (comp && comp.payload?.publicId) {
+          publicId = comp.payload.publicId;
+        } else if (b) {
+          const attrMatch = b.html.match(/data-public-id=["']([^"']+)["']/);
+          if (attrMatch) publicId = attrMatch[1];
         }
-      }
 
-      // 3. Fallback: URL extraction (from comp or block)
-      if (!publicId) {
-        const url = comp?.payload?.url || (b ? b.html.match(/src=["']?([^"'\s>]+)["']?/)?.[1] : null);
-        if (url && url.includes('cloudinary.com')) {
-          console.info('[Cloudinary] Tentando extrair ID da URL:', url);
-          const parts = url.split('/upload/');
-          if (parts.length > 1) {
-            let path = parts[1].replace(/^v\d+\//, ''); 
-            const lastDot = path.lastIndexOf('.');
-            publicId = lastDot > -1 ? path.substring(0, lastDot) : path;
+        if (!publicId) {
+          const url = comp?.payload?.url || (b ? b.html.match(/src=["']?([^"'\s>]+)["']?/)?.[1] : null);
+          if (url && url.includes('cloudinary.com')) {
+            const parts = url.split('/upload/');
+            if (parts.length > 1) {
+              let path = parts[1].replace(/^v\d+\//, ''); 
+              const lastDot = path.lastIndexOf('.');
+              publicId = lastDot > -1 ? path.substring(0, lastDot) : path;
+            }
           }
         }
       }
 
       if (publicId) {
-        console.info('[Cloudinary] Iniciando deleção do ID:', publicId);
-        // Alerta de debug para o usuário confirmar o que foi capturado
-        alert(`Sistema identificou esta imagem no Cloudinary.\nID: ${publicId}\n\nClique em OK para tentar apagar no servidor.`);
-        
-        const ok = window.confirm(`Deseja excluir esta imagem permanentemente do servidor?\nID: ${publicId}`);
-        if (!ok) return;
-
-        try {
-          setSaving(true);
-          const res: any = await trilhaBuilderApi.deleteCloudinaryImage(publicId, {
-            kind: 'etapa',
-            trailId,
-            moduleId: activeModuleId!,
-            etapaId: activeLessonId!
-          });
-          console.info('[Cloudinary] Resposta da deleção:', res);
-          showToast('Imagem removida do servidor');
-        } catch (err) {
-          console.error('[Cloudinary] Erro na deleção:', err);
-          showToast('Erro ao excluir no servidor. O bloco não será removido.');
-          setSaving(false);
-          return; 
-        } finally {
-          setSaving(false);
+        const ok = window.confirm(`Deseja excluir esta imagem permanentemente do servidor?`);
+        if (ok) {
+          try {
+            setSaving(true);
+            await trilhaBuilderApi.deleteCloudinaryImage(publicId, {
+              kind: 'etapa', trailId, moduleId: activeModuleId!, etapaId: activeLessonId!
+            });
+            showToast('Imagem removida do servidor');
+          } catch (err) {
+            console.warn('[Cloudinary] Erro na deleção (prosseguindo localmente):', err);
+          } finally {
+            setSaving(false);
+          }
         }
-      } else {
-        console.warn('[Cloudinary] Não foi possível identificar o ID desta imagem no HTML:', b.html);
       }
     }
     
+    // Clean up pending uploads and remove from UI
     if (pendingFiles[blockId]) {
       setPendingFiles(prev => {
         const next = { ...prev };
