@@ -85,6 +85,7 @@ export default function LayoutAdmin() {
       icon: BookOpen,
       items: [
         { label: 'Meus Produtos', icon: BookOpen, path: '/admin/trilhas', color: 'text-orange-500' },
+        { label: 'Posts', icon: FileText, path: '/admin/posts', color: 'text-green-500' },
         { label: 'Questionários', icon: FileText, path: '/admin/questionarios', color: 'text-blue-400' },
         { label: 'Pág. customizáveis', icon: Settings, path: '/admin/paginas', color: 'text-slate-400' },
       ]
