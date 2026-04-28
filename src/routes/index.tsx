@@ -18,6 +18,7 @@ import AdminTrilhaBuilder from '../pages/admin/TrilhaBuilder';
 import AdminProjetos from '../pages/admin/Projetos';
 import AdminRelatorios from '../pages/admin/Relatorios';
 import AdminConfiguracoes from '../pages/admin/Configuracoes';
+import AdminPosts from '../pages/admin/Posts';
 import PlaceholderPage from '../pages/admin/Placeholder';
 import Cronograma from '../pages/admin/Cronograma';
 
@@ -27,8 +28,10 @@ import EmpresaProjetos from '../pages/empresa/Projetos';
 import EmpresaMembros from '../pages/empresa/Membros';
 
 // Student Pages
+import HomeFeed from '../pages/aluno/HomeFeed';
 import AlunoDashboard from '../pages/aluno/Dashboard';
 import AlunoAulaPlayer from '../pages/aluno/AulaPlayer';
+import PostDetail from '../pages/aluno/PostDetail';
 
 // Layouts
 import LayoutAdmin from '../components/layouts/LayoutAdmin';
@@ -98,6 +101,7 @@ export default function AppRoutes() {
         <Route path="paginas" element={<PlaceholderPage title="Páginas Customizáveis" />} />
         <Route path="trilhas/nova" element={<AdminTrilhaBuilder />} />
         <Route path="trilhas/:id" element={<AdminTrilhaBuilder />} />
+        <Route path="posts" element={<AdminPosts />} />
         <Route path="relatorios" element={<AdminRelatorios />} />
         <Route path="configuracoes" element={<AdminConfiguracoes />} />
       </Route>
@@ -126,8 +130,10 @@ export default function AppRoutes() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<AlunoDashboard />} />
+        <Route index element={<HomeFeed />} />
+        <Route path="trilhas" element={<AlunoDashboard />} />
         <Route path="aula/:id" element={<AlunoAulaPlayer />} />
+        <Route path="post/:postId" element={<PostDetail />} />
       </Route>
 
       {/* Fallback */}
