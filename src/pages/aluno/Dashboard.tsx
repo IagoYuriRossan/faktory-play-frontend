@@ -47,36 +47,27 @@ export default function AlunoDashboard() {
           // ignore revalidation error; proceed with existing user
         }
 
-        const [projects, allTrails, enrollmentsData] = await Promise.all([
-          api.get<any[]>('/api/projects'),
-          api.get<Trail[]>('/api/trails'),
+        const [userTrails, enrollmentsData] = await Promise.all([
+          api.get<Trail[]>(`/api/users/${currentUser.id}/trails`),
           (async () => {
-            if (currentUser && (currentUser as any).companyId) {
-              try {
-                return await api.get<Enrollment[]>(`/api/companies/${(currentUser as any).companyId}/users/${currentUser.id}/progress`);
-              } catch (err: any) {
-                // Fallback to global users endpoint when company-scoped progress is not available
-                if (err instanceof ApiError && err.status === 404) {
-                  return await api.get<Enrollment[]>(`/api/users/${currentUser.id}/progress`);
+            try {
+              // Prefer owner-scoped progress to avoid 403 in company-scoped routes
+              return await api.get<Enrollment[]>(`/api/users/${currentUser.id}/progress`);
+            } catch (err: any) {
+              if (currentUser && (currentUser as any).companyId) {
+                try {
+                  return await api.get<Enrollment[]>(`/api/companies/${(currentUser as any).companyId}/users/${currentUser.id}/progress`);
+                } catch (innerErr) {
+                  return [];
                 }
-                throw err;
               }
+              return [];
             }
-            return await api.get<Enrollment[]>(`/api/users/${currentUser.id}/progress`);
           })(),
         ]);
 
-        const projectTrailIds = projects.map((p: any) => p.trailId);
-        const dbTrails = allTrails.filter(t => projectTrailIds.includes(t.id));
-
-        // Also include trails explicitly allowed for the user (union, de-duplicated)
-        const userAllowed: string[] = (currentUser as any)?.allowedTrails || [];
-        const allowedTrailsFromAll = allTrails.filter(t => userAllowed.includes(t.id));
-        const combinedMap = new Map<string, typeof allTrails[0]>();
-        [...dbTrails, ...allowedTrailsFromAll].forEach(t => combinedMap.set(t.id, t));
-        const visibleTrails = Array.from(combinedMap.values());
-        setTrails(visibleTrails);
-        setEnrollments(enrollmentsData);
+        setTrails(userTrails || []);
+        setEnrollments(enrollmentsData || []);
       } catch (error: any) {
         // Avoid noisy logs on expected rate-limit responses
         if (error?.response?.status === 429) {
