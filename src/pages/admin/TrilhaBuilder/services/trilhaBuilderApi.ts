@@ -29,6 +29,14 @@ export const trilhaBuilderApi = {
     return api.post<TrailMutationResponse>('/api/trails', data);
   },
 
+  createProject(uid: string, data: Partial<Trail>) {
+    return api.post<TrailMutationResponse>(`/api/users/${uid}/projects`, {
+      title: data.title,
+      description: data.description,
+      // outros campos como startAt, dueAt podem ser adicionados se disponíveis no trailData
+    });
+  },
+
   deleteTrail(id: string) {
     return api.delete(`/api/trails/${id}`);
   },

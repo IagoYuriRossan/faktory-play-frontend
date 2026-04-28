@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Module } from '../../../../@types/index';
 import { trilhaBuilderApi } from '../services/trilhaBuilderApi';
 
@@ -11,6 +11,8 @@ export interface TrailData {
 
 export function useTrailData() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const uid = searchParams.get('uid');
   const navigate = useNavigate();
   const trailId = id || '';
 
@@ -74,6 +76,10 @@ export function useTrailData() {
         const finalData = { id: trailId === 'nova' ? undefined : trailId, ...trailData };
         if (id && id !== 'nova') {
           await trilhaBuilderApi.updateTrail(trailId, finalData);
+        } else if (uid) {
+          const res = await trilhaBuilderApi.createProject(uid, finalData);
+          const returnedId = res?.id || trailId;
+          navigate(`/admin/trilhas/${returnedId}?uid=${uid}`, { replace: true });
         } else {
           const res = await trilhaBuilderApi.createTrail(finalData);
           const returnedId = res?.id || trailId;
@@ -183,11 +189,21 @@ export function useTrailData() {
           await trilhaBuilderApi.updateTrail(trailId, finalData);
         } catch (err: any) {
           if (err && err.status === 404) {
-            const res = await trilhaBuilderApi.createTrail(finalData);
-            const returnedId = res?.id || trailId;
-            navigate(`/admin/trilhas/${returnedId}`, { replace: true });
+            if (uid) {
+              const res = await trilhaBuilderApi.createProject(uid, finalData);
+              const returnedId = res?.id || trailId;
+              navigate(`/admin/trilhas/${returnedId}?uid=${uid}`, { replace: true });
+            } else {
+              const res = await trilhaBuilderApi.createTrail(finalData);
+              const returnedId = res?.id || trailId;
+              navigate(`/admin/trilhas/${returnedId}`, { replace: true });
+            }
           } else { throw err; }
         }
+      } else if (uid) {
+        const res = await trilhaBuilderApi.createProject(uid, finalData);
+        const returnedId = res?.id || trailId;
+        navigate(`/admin/trilhas/${returnedId}?uid=${uid}`, { replace: true });
       } else {
         const res = await trilhaBuilderApi.createTrail(finalData);
         const returnedId = res?.id || trailId;

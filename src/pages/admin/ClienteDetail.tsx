@@ -105,31 +105,13 @@ export default function AdminClienteDetail() {
       // Optimistically update local state
       setUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, name: editName, role: editRole, allowedTrails: editAllowedTrails } as any : u));
 
-      // Persist basic fields first
-      const payload: any = { name: editName, role: editRole };
-      await api.put(`/api/companies/${id}/users/${editingUser.id}`, payload);
-
-      // Handle allowedTrails changes: compute diffs
-      const prevAllowed: string[] = ((editingUser as any).allowedTrails as string[]) || [];
-      const toAdd = editAllowedTrails.filter(t => !prevAllowed.includes(t));
-      const toRemove = prevAllowed.filter(t => !editAllowedTrails.includes(t));
-
-      // Apply assigns/unassigns; on first failure rollback optimistic state and surface toast
-      try {
-        for (const tid of toAdd) {
-          await assign(id, editingUser.id, tid, { source: 'admin' });
-        }
-        for (const tid of toRemove) {
-          await unassign(id, editingUser.id, tid);
-        }
-      } catch (err: any) {
-        console.error('Error applying allowedTrails changes:', err);
-        // rollback
-        setUsers(prevUsers);
-        setEditError(err?.message || 'Erro ao atribuir trilhas. Alterações revertidas.');
-        showToast(err?.message || 'Erro ao atribuir trilhas. Alterações revertidas.');
-        return;
-      }
+      // Persist all fields in a single PUT
+      const payload: any = { 
+        name: editName, 
+        role: editRole,
+        allowedTrails: editAllowedTrails
+      };
+      await api.put(`/api/users/${editingUser.id}`, payload);
 
       setEditingUser(null);
       showToast('Usuário atualizado com sucesso.');
@@ -146,8 +128,7 @@ export default function AdminClienteDetail() {
     try {
       // Backend: DELETE /api/users/:uid com cascata completa (progress, userTrails, invites)
       // Autorização: requireAuth + requireAdmin (company_admin só pode deletar da própria empresa)
-      if (!id) throw new Error('company id missing');
-      await api.delete(`/api/companies/${id}/users/${deletingUser.id}`);
+      await api.delete(`/api/users/${deletingUser.id}`);
       setUsers(prev => prev.filter(u => u.id !== deletingUser.id));
       setDeletingUser(null);
       showToast('Usuário removido com sucesso.');
@@ -354,8 +335,8 @@ export default function AdminClienteDetail() {
                     </tr>
                   ) : (
                     users.map((user) => (
-                      <>
-                        <tr key={user.id} className="hover:bg-slate-50 transition-colors">
+                      <React.Fragment key={user.id}>
+                        <tr className="hover:bg-slate-50 transition-colors">
                           <td className="px-4 py-4 font-medium text-slate-800">{user.name}</td>
                           <td className="px-4 py-4 text-sm text-slate-600">{user.email}</td>
                           <td className="px-4 py-4">
@@ -482,7 +463,7 @@ export default function AdminClienteDetail() {
                             </td>
                           </tr>
                         )}
-                      </>
+                      </React.Fragment>
                     ))
                   )}
                 </tbody>
