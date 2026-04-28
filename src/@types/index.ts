@@ -119,10 +119,15 @@ export interface TrailSummary {
 
 export interface Project {
   id: string;
-  clientId: string;
-  trailId: string;
-  status: 'active' | 'inactive';
-  createdAt: any;
+  ownerUid: string;
+  title: string;
+  description?: string;
+  startAt?: string;
+  dueAt?: string;
+  templateId?: string;
+  metadata?: Record<string, any>;
+  status?: 'active' | 'inactive';
+  createdAt?: string;
 }
 
 export interface Enrollment {
