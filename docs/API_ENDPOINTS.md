@@ -393,6 +393,40 @@ Atualiza progresso de uma lição.
 
 ---
 
+## NOVOS ENDPOINTS — Progress (nova estrutura)
+
+- `PUT /api/users/:uid/trails/:trailId/lessons/:lessonId`
+  - Atualiza progresso da lição na nova estrutura.
+  - Body (exemplo):
+    ```json
+    {
+      "completed": true,
+      "watchedSeconds": 120,
+      "moduleId": "module_abc",
+      "trailId": "trail_xyz"
+    }
+    ```
+  - Efeitos:
+    - Escreve em `users/{uid}/trails/{trailId}/lessons/{lessonId}` (novo esquema).
+    - Também escreve em `users/{uid}/progress/{lessonId}` (legacy) — escrita dupla para compatibilidade.
+    - Atualiza o documento resumo `users/{uid}/trails/{trailId}` (merge) com contadores e timestamps.
+    - Dispara evento observability (opcional) e o Cloud Function que recalcula resumos por trilha.
+  - Auth: `requireAuth` (próprio usuário, `company_admin` da mesma empresa ou `superadmin`).
+
+- `PUT /api/users/:uid/trails/:trailId/subetapas/:subetapaId` e
+  `PUT /api/users/:uid/trails/:trailId/tasks/:taskId`
+  - Mesma semântica da rota de lição: escrita dupla (novo + legacy), atualização de resumo e publicação de evento.
+
+- `GET /api/users/:uid/progress` e `GET /api/users/:uid/progress/:lessonId`
+  - Mantidos como proxies/compatibilidade com o contrato existente (retornam dados de `users/{uid}/progress/*`).
+
+- `GET /api/users/:uid/trails`
+  - Retorna progresso consolidado por trilha (resumo). Os campos esperados permanecem os mesmos e são atualizados pelo trigger que escuta writes nas lições.
+
+Implementação: consulte `src/routes/progress.ts` para contratos exatos de request/response e `functions/index.js` para a lógica de resumo/trigger.
+
+---
+
 ## 🏢 EMPRESAS
 
 ### GET /api/companies

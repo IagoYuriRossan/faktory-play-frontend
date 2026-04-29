@@ -1,0 +1,286 @@
+openapi: 3.0.3
+info:
+  title: Progress API
+  version: 1.0.0
+  description: API para gravação e leitura de progresso por trilha (esboço gerado a partir de docs/PROGRESS_API.md).
+servers:
+  - url: /api
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    LessonUpdate:
+      type: object
+      properties:
+        completed:
+          type: boolean
+        source:
+          type: string
+          enum: [ui, player, auto, quiz]
+        lastViewedAt:
+          type: string
+          format: date-time
+        moduleId:
+          type: string
+        meta:
+          type: object
+      required: [completed]
+    TaskUpdate:
+      type: object
+      properties:
+        completed:
+          type: boolean
+        score:
+          type: number
+        source:
+          type: string
+        meta:
+          type: object
+      required: [completed]
+    TrailProgressSummary:
+      type: object
+      properties:
+        userId:
+          type: string
+        trailId:
+          type: string
+        companyId:
+          type: string
+          nullable: true
+        progress:
+          type: number
+          format: float
+        completedLessonsCount:
+          type: integer
+        totalLessons:
+          type: integer
+          nullable: true
+        completedModulesCount:
+          type: integer
+        lastAccess:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        completedLessonsPreview:
+          type: array
+          items:
+            type: string
+    TrailProgressDetailResponse:
+      type: object
+      properties:
+        etapas:
+          type: array
+          items: { type: object }
+        subetapas:
+          type: array
+          items: { type: object }
+        tasks:
+          type: array
+          items: { type: object }
+paths:
+  /users/{uid}/trails/{trailId}/lessons/{lessonId}:
+    put:
+      summary: Marcar/atualizar lição (idempotente)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema: { type: string }
+        - name: trailId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: lessonId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LessonUpdate'
+      responses:
+        '200':
+          description: Sucesso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  updatedSummary: { $ref: '#/components/schemas/TrailProgressSummary' }
+        '400': { description: Bad Request }
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+  /users/{uid}/trails/{trailId}/lessons/{parentLessonId}/subetapas/{subId}:
+    put:
+      summary: Marcar subetapa (compatível)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema: { type: string }
+        - name: trailId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: parentLessonId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: subId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LessonUpdate'
+      responses:
+        '200': { description: Sucesso }
+  /users/{uid}/trails/{trailId}/lessons/{lessonId}/tasks/{taskId}:
+    put:
+      summary: Marcar tarefa/quiz (score)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema: { type: string }
+        - name: trailId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: lessonId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskUpdate'
+      responses:
+        '200': { description: Sucesso }
+  /users/{uid}/progress/trail/{trailId}:
+    get:
+      summary: Buscar progresso granular (player)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema: { type: string }
+        - name: trailId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Detalhe do progresso na trilha
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrailProgressDetailResponse'
+  /users/{uid}/progress:
+    get:
+      summary: Buscar resumo de enrollments (dashboard do usuário)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Lista de resumos por trilha
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrailProgressSummary'
+  /companies/{companyId}/trails/{trailId}/progress:
+    get:
+      summary: Buscar progresso por empresa/trilha (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: trailId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Agregados da trilha por empresa
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  averageProgress: { type: number }
+                  completedRate: { type: number }
+                  userCount: { type: integer }
+  /users/count:
+    get:
+      summary: Contagem de usuários (auxiliar)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: { count }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+  /users/batch:
+    post:
+      summary: Batch fetch de usuários (auxiliar)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                uids:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: Lista de usuários
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object }
