@@ -15,6 +15,8 @@ export interface ConfirmImageResponse {
   imageUrl: string;
 }
 
+export interface UploadImageResult { imageUrl: string; publicId: string; }
+
 export const trilhaBuilderApi = {
   // ── Trilhas ──
   getTrail(id: string) {
@@ -98,12 +100,12 @@ export const trilhaBuilderApi = {
 
   // ── Upload de imagem (Cloudinary) ──
   async uploadEtapaImage(
-    trailId: string,
-    moduleId: string,
-    etapaId: string,
-    file: File,
-    onProgress?: (pct: number) => void
-  ): Promise<string> {
+      trailId: string,
+      moduleId: string,
+      etapaId: string,
+      file: File,
+      onProgress?: (pct: number) => void
+    ): Promise<UploadImageResult> {
     const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
     const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET;
 
@@ -168,7 +170,7 @@ export const trilhaBuilderApi = {
       format: cloudData.format
     });
 
-    return { imageUrl: cloudData.secure_url, publicId: cloudData.public_id };
+      return { imageUrl: cloudData.secure_url, publicId: cloudData.public_id } as UploadImageResult;
   },
 
   deleteCloudinaryImage(publicId: string, target?: { kind: 'etapa' | 'trail' | 'module'; trailId?: string; moduleId?: string; etapaId?: string }) {
