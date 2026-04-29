@@ -35,6 +35,13 @@ export default function AlunoAulaPlayer() {
   const [answersMap, setAnswersMap] = useState<Record<string, any>>({});
   const [submitResult, setSubmitResult] = useState<any>(null);
   const [expandedModules, setExpandedModules] = useState<string[]>([]);
+  const [syncingSummary, setSyncingSummary] = useState(false);
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 4500);
+  };
 
   useEffect(() => {
     async function fetchData() {
@@ -86,9 +93,9 @@ export default function AlunoAulaPlayer() {
             // try to find first sublesson
             let found: Lesson | null = null;
             for (const m of trailData.modules) {
-              for (const l of m.etapas) {
-                if (l.subetapas && l.subetapas?.length > 0) { found = l.subetapas[0]; break; }
-              }
+              for (const l of m.etapas || []) {
+                  if (l.subetapas && l.subetapas?.length > 0) { found = l.subetapas[0]; break; }
+                }
               if (found) break;
             }
             if (found) setCurrentLesson(found);
@@ -112,7 +119,6 @@ export default function AlunoAulaPlayer() {
             trailId: id,
             progress: progressPct,
             completedLessons,
-            completedSubetapas: progressData.subetapas.filter(p => p.completed).map(p => p.id),
             completedTasks: progressData.tasks.filter(p => p.completed).map(p => p.id),
             status: progressPct >= 100 ? 'completed' : progressPct > 0 ? 'in-progress' : 'not-started',
             lastAccess: new Date().toISOString(),
@@ -125,7 +131,6 @@ export default function AlunoAulaPlayer() {
             trailId: id,
             progress: 0,
             completedLessons: [],
-            completedSubetapas: [],
             completedTasks: [],
             status: 'not-started',
             lastAccess: new Date().toISOString(),
@@ -140,6 +145,70 @@ export default function AlunoAulaPlayer() {
 
     fetchData();
   }, [id, user]);
+
+  // Polling helper with exponential backoff and optional jitter.
+  async function pollUserProgress(
+    uid: string,
+    maxAttempts = 5,
+    initialIntervalMs = 1000,
+    multiplier = 2,
+    jitter = 200
+  ) {
+    let attempt = 0;
+    while (attempt < maxAttempts) {
+      try {
+        const res = await api.get<any>(`/api/users/${encodeURIComponent(uid)}/progress`);
+        if (res) return res;
+      } catch (e) {
+        // ignore and retry
+      }
+
+      attempt += 1;
+      const expBackoff = initialIntervalMs * Math.pow(multiplier, attempt - 1);
+      const sleepMs = Math.max(0, expBackoff + Math.floor(Math.random() * jitter));
+      await new Promise(r => setTimeout(r, sleepMs));
+    }
+
+    // final failure: notify user via toast
+    showToast('error', 'Não foi possível sincronizar o resumo. Tente novamente mais tarde.');
+    return null;
+  }
+
+  // Apply progress API response (userTrails or legacy) to enrollment state
+  function applyProgressToEnrollment(progressItems: any) {
+    // If progressItems is an array (userTrails), try to find trail summary
+    try {
+      if (Array.isArray(progressItems)) {
+        const item = progressItems.find((t: any) => t.trailId === (trail?.id || id));
+        if (item) {
+          setEnrollment(prev => prev ? ({
+            ...prev,
+            progress: item.totalProgress ?? item.totalProgress ?? prev.progress,
+            completedLessons: prev?.completedLessons ?? [],
+            lastAccess: item.lastActivityAt ?? prev?.lastAccess,
+            status: item.status ?? prev?.status,
+          } as any) : prev);
+          return;
+        }
+      }
+      // fallback: if object with etapas/subetapas/tasks
+      if (progressItems && progressItems.etapas) {
+        const completedLessons = (progressItems.etapas || []).filter((p: any) => p.completed).map((p: any) => p.id);
+        const completedSubetapas = (progressItems.subetapas || []).filter((p: any) => p.completed).map((p: any) => p.id);
+        const totalLessons = trail?.modules.reduce((acc, m) => acc + (m.etapas?.length || 0), 0) || 1;
+        const progressPct = Math.round((completedLessons.length / totalLessons) * 100);
+        setEnrollment(prev => prev ? ({
+          ...prev,
+          progress: progressPct,
+          completedLessons,
+          status: progressPct >= 100 ? 'completed' : progressPct > 0 ? 'in-progress' : 'not-started',
+        } as any) : prev);
+      }
+    } catch (e) {
+      // ignore mapping errors
+      console.warn('applyProgressToEnrollment failed', e);
+    }
+  }
 
   const toggleModule = (moduleId: string) => {
     setExpandedModules(prev =>
@@ -175,6 +244,15 @@ export default function AlunoAulaPlayer() {
         completedLessons: newCompleted,
         progress: Math.round((newCompleted.length / totalLessonsInTrail) * 100)
       } : null);
+      // start async polling to refresh the summarized enrollment (eventual consistency)
+      setSyncingSummary(true);
+      (async () => {
+        try {
+          const progressData = await pollUserProgress(user.id);
+          if (progressData) applyProgressToEnrollment(progressData);
+        } catch (_) {}
+        setSyncingSummary(false);
+      })();
     } catch (err) {
       console.error('Error toggling lesson completion:', err);
     }
@@ -202,6 +280,15 @@ export default function AlunoAulaPlayer() {
         ...prev,
         completedSubetapas: newCompleted
       } : null);
+      // trigger refresh of summarized enrollment
+      setSyncingSummary(true);
+      (async () => {
+        try {
+          const progressData = await pollUserProgress(user.id);
+          if (progressData) applyProgressToEnrollment(progressData);
+        } catch (_) {}
+        setSyncingSummary(false);
+      })();
     } catch (err) {
       console.error('Error toggling subetapa completion:', err);
     }
@@ -235,10 +322,17 @@ export default function AlunoAulaPlayer() {
 
   // Progress auto-mark config (persisted in localStorage)
   const [showProgressConfig, setShowProgressConfig] = useState(false);
-  const [progressConfig, setProgressConfig] = useState(() => {
+  type ProgressConfig = {
+    enabled: boolean;
+    videoPercent: number;
+    requireVisibility: boolean;
+    requirePlay: boolean;
+    nonVideoSeconds: number;
+  };
+  const [progressConfig, setProgressConfig] = useState<ProgressConfig>(() => {
     try {
       const raw = localStorage.getItem('progressConfig');
-      if (raw) return JSON.parse(raw);
+      if (raw) return JSON.parse(raw) as ProgressConfig;
     } catch {}
     return {
       enabled: true,
@@ -251,242 +345,6 @@ export default function AlunoAulaPlayer() {
 
   useEffect(() => { try { localStorage.setItem('progressConfig', JSON.stringify(progressConfig)); } catch {} }, [progressConfig]);
 
-  const handleQuizSubmit = async () => {
-    if (quizAnswer !== null && currentLesson && enrollment && trail && user) {
-      const isCorrect = quizAnswer === currentLesson.quiz?.correctIndex;
-      setShowQuizResult(true);
-
-      if (isCorrect) {
-        // Save as task completion
-        try {
-          await api.put(`/api/users/${user.id}/trails/${trail.id}/lessons/${currentLesson.id}/tasks/quiz`, {
-            completed: true,
-            source: 'quiz',
-            lastViewedAt: new Date().toISOString(),
-            trailId: trail.id,
-            moduleId: currentModule?.id,
-            score: 100
-          });
-          
-          // Also mark lesson as complete if it's primarily a quiz lesson
-          await handleToggleLessonComplete(currentLesson);
-        } catch (error) {
-          console.error('Error saving quiz progress:', error);
-        }
-      }
-    }
-  };
-
-  // Inline component to run backend questionnaire flows
-  function QuestionnaireRunner({
-    questionnaireId,
-    projectId,
-    userId,
-    onClose,
-    onSubmitted,
-  }: {
-    questionnaireId: string;
-    projectId?: string;
-    userId?: string;
-    onClose: () => void;
-    onSubmitted?: (res: any) => void;
-  }) {
-    const { questionnaire, loading: qLoading, error, reload } = useQuestionnaire(questionnaireId);
-    const [localAttemptId, setLocalAttemptId] = useState<string | null>(null);
-    const [localAnswers, setLocalAnswers] = useState<Record<string, any>>({});
-    const [starting, setStarting] = useState(false);
-    const [submitting, setSubmitting] = useState(false);
-    const [result, setResult] = useState<any>(null);
-
-    const handleStart = async () => {
-      setStarting(true);
-      try {
-        const res = await startAttempt(questionnaireId);
-        setLocalAttemptId(res.attemptId);
-      } catch (e) {
-        console.error('start attempt error', e);
-      } finally {
-        setStarting(false);
-      }
-    };
-
-    const handleChangeOption = (questionId: string, optionId: string, type: string) => {
-      setLocalAnswers(prev => {
-        const cur = { ...prev };
-        if (type === 'single_choice') {
-          cur[questionId] = [optionId];
-        } else if (type === 'multiple_choice') {
-          const arr: string[] = Array.isArray(cur[questionId]) ? [...cur[questionId]] : [];
-          if (arr.includes(optionId)) {
-            cur[questionId] = arr.filter(a => a !== optionId);
-          } else {
-            arr.push(optionId);
-            cur[questionId] = arr;
-          }
-        }
-        return cur;
-      });
-    };
-
-    const handleChangeText = (questionId: string, text: string) => {
-      setLocalAnswers(prev => ({ ...prev, [questionId]: text }));
-    };
-
-    const handleSubmit = async () => {
-      if (!localAttemptId) return;
-      setSubmitting(true);
-      try {
-        const answers = Object.keys(localAnswers).map(qid => {
-          const val = localAnswers[qid];
-          if (Array.isArray(val)) return { questionId: qid, selectedOptionIds: val };
-          const isString = typeof val === 'string';
-          if (isString) return { questionId: qid, textAnswer: val };
-          return { questionId: qid, selectedOptionIds: val };
-        });
-        const res = await submitAttempt(localAttemptId, answers);
-        // mark open questions as pending in UI if any
-        const enriched = { ...res };
-        if (questionnaire && questionnaire.questions) {
-          enriched.perQuestion = (enriched.perQuestion || []).map((pq: any) => {
-            const q = questionnaire.questions.find(x => x.id === pq.questionId);
-            if (q && q.type === 'open') {
-              return { ...pq, pendingCorrection: true };
-            }
-            return pq;
-          });
-        }
-        setResult(enriched);
-        // After submission, refresh user and project progress and notify listeners
-        try {
-          if (projectId && userId) {
-            await api.get(`/api/projects/${encodeURIComponent(projectId)}/users/${encodeURIComponent(userId)}/progress`);
-            await api.get(`/api/projects/${encodeURIComponent(projectId)}/progress`);
-            // notify other components (Cronograma) to reload
-            try { window.dispatchEvent(new CustomEvent('project:progress-updated', { detail: { projectId } })); } catch (e) { /* ignore */ }
-          }
-        } catch (e) {
-          // ignore errors on refresh
-        }
-        if (onSubmitted) onSubmitted(enriched);
-      } catch (e) {
-        console.error('submit error', e);
-      } finally {
-        setSubmitting(false);
-      }
-    };
-
-    return (
-      <div className="bg-white rounded-lg border border-slate-200 p-4 mt-4">
-        {qLoading && <div>Carregando questionário...</div>}
-        {error && <div className="text-red-500">Erro ao carregar o questionário.</div>}
-        {questionnaire && (
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <div className="font-bold">{questionnaire.title}</div>
-                <div className="text-xs text-slate-500">{questionnaire.description}</div>
-              </div>
-              <div className="text-xs text-slate-400">{localAttemptId ? 'Tentativa iniciada' : 'Pronto'}</div>
-            </div>
-
-            {!localAttemptId && (
-              <div className="flex gap-2">
-                <button onClick={handleStart} className="bg-faktory-blue text-white px-4 py-2 rounded font-bold" disabled={starting}>
-                  {starting ? 'Iniciando...' : 'Começar'}
-                </button>
-                <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
-              </div>
-            )}
-
-            {localAttemptId && !result && (
-              <div className="mt-4 space-y-4">
-                {questionnaire.questions.map(q => (
-                  <div key={q.id} className="p-3 border rounded bg-slate-50">
-                    <div className="font-medium mb-2">{q.text}</div>
-                    {q.type === 'open' && (
-                      <textarea
-                        className="w-full p-2 border rounded"
-                        value={localAnswers[q.id] || ''}
-                        onChange={e => handleChangeText(q.id, e.target.value)}
-                      />
-                    )}
-                    {(q.type === 'single_choice' || q.type === 'multiple_choice') && (
-                      <div className="space-y-2">
-                        {q.options?.map(opt => (
-                          <label key={opt.id} className="flex items-center gap-2">
-                            <input
-                              type={q.type === 'single_choice' ? 'radio' : 'checkbox'}
-                              name={q.id}
-                              checked={Array.isArray(localAnswers[q.id]) ? localAnswers[q.id].includes(opt.id) : localAnswers[q.id]?.[0] === opt.id}
-                              onChange={() => handleChangeOption(q.id, opt.id, q.type)}
-                            />
-                            <span>{opt.text}</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-
-                <div className="flex items-center gap-2">
-                  <button onClick={handleSubmit} disabled={submitting} className="bg-green-600 text-white px-4 py-2 rounded font-bold">
-                    {submitting ? 'Enviando...' : 'Enviar respostas'}
-                  </button>
-                  <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
-                </div>
-              </div>
-            )}
-
-            {result && (
-              <div className="mt-4 p-3 bg-white border rounded">
-                <div className="font-bold">Resultado</div>
-                <div className="text-sm">Score: {result.score} / {result.maxScore}</div>
-                <div className="mt-2">
-                  <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-[#f4f7f9]">
-        <Loader2 className="animate-spin text-faktory-blue" size={40} />
-      </div>
-    );
-  }
-
-  if (!trail || !currentLesson) {
-    if (needAuth) {
-      return (
-        <div className="flex flex-col items-center justify-center h-screen bg-[#f4f7f9]">
-          <h2 className="text-xl font-bold text-slate-800">Acesso negado</h2>
-          <p className="text-slate-600 mt-2">Você precisa estar logado para acessar esta trilha.</p>
-          <div className="mt-4 flex gap-3">
-            <button onClick={() => navigate('/login')} className="text-white bg-faktory-blue px-4 py-2 rounded">Entrar</button>
-            <button onClick={() => navigate('/app')} className="text-faktory-blue border border-faktory-blue px-4 py-2 rounded">Voltar ao Dashboard</button>
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="flex flex-col items-center justify-center h-screen bg-[#f4f7f9]">
-        <h2 className="text-xl font-bold text-slate-800">Trilha não encontrada</h2>
-        <button onClick={() => navigate('/app')} className="mt-4 text-faktory-blue font-bold">Voltar ao Dashboard</button>
-      </div>
-    );
-  }
-
-  const currentModule = trail.modules.find(m => m.etapas.some(l => l.id === currentLesson.id));
-  const quizComponent = currentLesson.components?.find(c => c.type === 'quiz');
-  const effectiveQuestionnaireId: string | undefined =
-    quizComponent?.payload?.questionnaireId || currentLesson.questionnaireId;
-
   // Auto-mark hybrid: Visibility API for non-video content + player APIs for YouTube/Vimeo.
   useEffect(() => {
     if (!user || !trail || !enrollment || !currentLesson) return;
@@ -498,7 +356,7 @@ export default function AlunoAulaPlayer() {
 
     const findParentEtapa = () => {
       for (const m of trail.modules) {
-        for (const etapa of m.etapas) {
+        for (const etapa of m.etapas || []) {
           if (etapa.subetapas && etapa.subetapas.some((s: any) => s.id === currentLesson.id)) return etapa;
         }
       }
@@ -693,7 +551,262 @@ export default function AlunoAulaPlayer() {
       try { window.removeEventListener('blur', onWindowBlur); } catch {}
       try { window.removeEventListener('focus', onWindowFocus); } catch {}
     };
-  }, [currentLesson, user, trail, enrollment]);
+  }, [currentLesson, user, trail, enrollment, progressConfig]);
+
+  const handleQuizSubmit = async () => {
+    if (quizAnswer !== null && currentLesson && enrollment && trail && user) {
+      const isCorrect = quizAnswer === currentLesson.quiz?.correctIndex;
+      setShowQuizResult(true);
+
+      if (isCorrect) {
+        // Save as task completion
+        try {
+          await api.put(`/api/users/${user.id}/trails/${trail.id}/lessons/${currentLesson.id}/tasks/quiz`, {
+            completed: true,
+            source: 'quiz',
+            lastViewedAt: new Date().toISOString(),
+            trailId: trail.id,
+            moduleId: currentModule?.id,
+            score: 100
+          });
+          
+          // Also mark lesson as complete if it's primarily a quiz lesson
+          await handleToggleLessonComplete(currentLesson);
+        } catch (error) {
+          console.error('Error saving quiz progress:', error);
+        }
+      }
+    }
+  };
+
+  // Inline component to run backend questionnaire flows
+  function QuestionnaireRunner({
+    questionnaireId,
+    projectId,
+    userId,
+    onClose,
+    onSubmitted,
+  }: {
+    questionnaireId: string;
+    projectId?: string;
+    userId?: string;
+    onClose: () => void;
+    onSubmitted?: (res: any) => void;
+  }) {
+    const { questionnaire, loading: qLoading, error, reload } = useQuestionnaire(questionnaireId);
+    const [localAttemptId, setLocalAttemptId] = useState<string | null>(null);
+    const [localAnswers, setLocalAnswers] = useState<Record<string, any>>({});
+    const [starting, setStarting] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const [result, setResult] = useState<any>(null);
+
+    const handleStart = async () => {
+      setStarting(true);
+      try {
+        const res = await startAttempt(questionnaireId, {
+          trailId: trail?.id,
+          enrollmentId: enrollment?.id,
+          moduleId: currentModule?.id,
+        });
+        setLocalAttemptId(res.attemptId);
+        // store globally as well for other flows
+        try { setAttemptId(res.attemptId); } catch (e) { /* ignore if unavailable */ }
+      } catch (e) {
+        console.error('start attempt error', e);
+      } finally {
+        setStarting(false);
+      }
+    };
+
+    const handleChangeOption = (questionId: string, optionId: string, type: string) => {
+      setLocalAnswers(prev => {
+        const cur = { ...prev };
+        if (type === 'single_choice') {
+          cur[questionId] = [optionId];
+        } else if (type === 'multiple_choice') {
+          const arr: string[] = Array.isArray(cur[questionId]) ? [...cur[questionId]] : [];
+          if (arr.includes(optionId)) {
+            cur[questionId] = arr.filter(a => a !== optionId);
+          } else {
+            arr.push(optionId);
+            cur[questionId] = arr;
+          }
+        }
+        return cur;
+      });
+    };
+
+    const handleChangeText = (questionId: string, text: string) => {
+      setLocalAnswers(prev => ({ ...prev, [questionId]: text }));
+    };
+
+    const handleSubmit = async () => {
+      if (!localAttemptId) return;
+      setSubmitting(true);
+      try {
+        const answers = Object.keys(localAnswers).map(qid => {
+          const val = localAnswers[qid];
+          if (Array.isArray(val)) return { questionId: qid, selectedOptionIds: val };
+          const isString = typeof val === 'string';
+          if (isString) return { questionId: qid, textAnswer: val };
+          return { questionId: qid, selectedOptionIds: val };
+        });
+        const res = await submitAttempt(localAttemptId, answers, { enrollmentId: enrollment?.id, trailId: trail?.id });
+        // mark open questions as pending in UI if any
+        const enriched = { ...res };
+        if (questionnaire && questionnaire.questions) {
+          enriched.perQuestion = (enriched.perQuestion || []).map((pq: any) => {
+            const q = questionnaire.questions.find(x => x.id === pq.questionId);
+            if (q && q.type === 'open') {
+              return { ...pq, pendingCorrection: true };
+            }
+            return pq;
+          });
+        }
+        setResult(enriched);
+        try { setSubmitResult(enriched); } catch (e) { /* ignore */ }
+        // After submission, refresh user and project progress and notify listeners
+        try {
+          if (projectId && userId) {
+            await api.get(`/api/projects/${encodeURIComponent(projectId)}/users/${encodeURIComponent(userId)}/progress`);
+            await api.get(`/api/projects/${encodeURIComponent(projectId)}/progress`);
+            // notify other components (Cronograma) to reload
+            try { window.dispatchEvent(new CustomEvent('project:progress-updated', { detail: { projectId } })); } catch (e) { /* ignore */ }
+          }
+        } catch (e) {
+          // ignore errors on refresh
+        }
+        if (onSubmitted) onSubmitted(enriched);
+      } catch (e) {
+        console.error('submit error', e);
+      } finally {
+        setSubmitting(false);
+      }
+    };
+
+    return (
+      <div className="bg-white rounded-lg border border-slate-200 p-4 mt-4">
+        {qLoading && <div>Carregando questionário...</div>}
+        {error && <div className="text-red-500">Erro ao carregar o questionário.</div>}
+        {questionnaire && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="font-bold">{questionnaire.title}</div>
+                <div className="text-xs text-slate-500">{questionnaire.description}</div>
+              </div>
+              <div className="text-xs text-slate-400">{localAttemptId ? 'Tentativa iniciada' : 'Pronto'}</div>
+            </div>
+
+            {!localAttemptId && (
+              <div className="flex gap-2">
+                <button onClick={handleStart} className="bg-faktory-blue text-white px-4 py-2 rounded font-bold" disabled={starting}>
+                  {starting ? 'Iniciando...' : 'Começar'}
+                </button>
+                <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+              </div>
+            )}
+
+            {localAttemptId && !result && (
+              <div className="mt-4 space-y-4">
+                {questionnaire.questions.map(q => (
+                  <div key={q.id} className="p-3 border rounded bg-slate-50">
+                    <div className="font-medium mb-2">{q.text}</div>
+                    {q.type === 'open' && (
+                      <textarea
+                        className="w-full p-2 border rounded"
+                        value={localAnswers[q.id] || ''}
+                        onChange={e => handleChangeText(q.id, e.target.value)}
+                      />
+                    )}
+                    {(q.type === 'single_choice' || q.type === 'multiple_choice') && (
+                      <div className="space-y-2">
+                        {q.options?.map(opt => (
+                          <label key={opt.id} className="flex items-center gap-2">
+                            <input
+                              type={q.type === 'single_choice' ? 'radio' : 'checkbox'}
+                              name={q.id}
+                              checked={Array.isArray(localAnswers[q.id]) ? localAnswers[q.id].includes(opt.id) : localAnswers[q.id]?.[0] === opt.id}
+                              onChange={() => handleChangeOption(q.id, opt.id, q.type)}
+                            />
+                            <span>{opt.text}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                <div className="flex items-center gap-2">
+                  <button onClick={handleSubmit} disabled={submitting} className="bg-green-600 text-white px-4 py-2 rounded font-bold">
+                    {submitting ? 'Enviando...' : 'Enviar respostas'}
+                  </button>
+                  <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+                </div>
+              </div>
+            )}
+
+            {result && (
+              <div className="mt-4 p-3 bg-white border rounded">
+                <div className="font-bold">Resultado</div>
+                <div className="text-sm">Score: {result.score} / {result.maxScore}</div>
+                {result.perQuestion && Array.isArray(result.perQuestion) && (
+                  <div className="mt-2">
+                    <div className="font-medium">Detalhes por questão:</div>
+                    <ul className="text-sm list-disc ml-5">
+                      {result.perQuestion.map((pq: any) => (
+                        <li key={pq.questionId}>
+                          Q: {pq.questionId} — {pq.isCorrect ? 'Correta' : 'Incorreta'} — {pq.pointsAwarded} pts {pq.pendingCorrection ? '(pendente de correção)' : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="mt-2">
+                  <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-[#f4f7f9]">
+        <Loader2 className="animate-spin text-faktory-blue" size={40} />
+      </div>
+    );
+  }
+
+  if (!trail || !currentLesson) {
+    if (needAuth) {
+      return (
+        <div className="flex flex-col items-center justify-center h-screen bg-[#f4f7f9]">
+          <h2 className="text-xl font-bold text-slate-800">Acesso negado</h2>
+          <p className="text-slate-600 mt-2">Você precisa estar logado para acessar esta trilha.</p>
+          <div className="mt-4 flex gap-3">
+            <button onClick={() => navigate('/login')} className="text-white bg-faktory-blue px-4 py-2 rounded">Entrar</button>
+            <button onClick={() => navigate('/app')} className="text-faktory-blue border border-faktory-blue px-4 py-2 rounded">Voltar ao Dashboard</button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-[#f4f7f9]">
+        <h2 className="text-xl font-bold text-slate-800">Trilha não encontrada</h2>
+        <button onClick={() => navigate('/app')} className="mt-4 text-faktory-blue font-bold">Voltar ao Dashboard</button>
+      </div>
+    );
+  }
+
+  const currentModule = trail.modules.find(m => m.etapas?.some(l => l.id === currentLesson.id));
+  const quizComponent = currentLesson.components?.find(c => c.type === 'quiz');
+  const effectiveQuestionnaireId: string | undefined =
+    quizComponent?.payload?.questionnaireId || currentLesson.questionnaireId;
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -712,6 +825,9 @@ export default function AlunoAulaPlayer() {
                 ></div>
               </div>
               <span className="text-[9px] font-bold text-slate-400">{enrollment?.progress || 0}%</span>
+              {syncingSummary && (
+                <span className="text-[9px] text-amber-600 font-medium ml-2">Resumo atualizando…</span>
+              )}
             </div>
           </div>
         </div>
@@ -743,12 +859,12 @@ export default function AlunoAulaPlayer() {
                     <label htmlFor="pc-visibility">Exigir visibilidade da aba</label>
                   </div>
                   <div className="flex items-center gap-2 mb-2">
-                    <input type="checkbox" id="pc-play" checked={progressConfig.requirePlay} onChange={e => setProgressConfig(p => ({ ...p, requirePlay: e.target.checked }))} />
+                    <input type="checkbox" id="pc-play" checked={progressConfig.requirePlay} onChange={e => setProgressConfig((p: typeof progressConfig) => ({ ...p, requirePlay: e.target.checked }))} />
                     <label htmlFor="pc-play">Exigir play (vídeo)</label>
                   </div>
                   <div className="flex items-center gap-2">
                     <label className="w-28">Texto (não-vídeo s)</label>
-                    <input type="number" value={progressConfig.nonVideoSeconds} min={1} onChange={e => setProgressConfig(p => ({ ...p, nonVideoSeconds: Number(e.target.value) }))} className="w-16" />
+                    <input type="number" value={progressConfig.nonVideoSeconds} min={1} onChange={e => setProgressConfig((p: typeof progressConfig) => ({ ...p, nonVideoSeconds: Number(e.target.value) }))} className="w-16" />
                   </div>
                 </div>
               )}
@@ -787,7 +903,7 @@ export default function AlunoAulaPlayer() {
 
                 {expandedModules.includes(module.id) && (
                   <div className="bg-white/50 border-y border-slate-50">
-                    {module.etapas.map((lesson, lIndex) => (
+                    {(module.etapas ?? []).map((lesson, lIndex) => (
                       <button
                         key={lesson.id}
                         onClick={() => {
@@ -975,13 +1091,13 @@ export default function AlunoAulaPlayer() {
                           <QuestionnaireRunner
                             questionnaireId={effectiveQuestionnaireId!}
                             projectId={trail.id}
-                            userId={user.id}
+                            userId={user?.id || ''}
                             onClose={() => { setShowQuestionnaire(false); setAttemptId(null); setSubmitResult(null); setAnswersMap({}); }}
                             onSubmitted={async (res: any) => {
                               setSubmitResult(res);
                               // refresh user's progress for this trail
                               try {
-                                const updated = await api.get<any>(`/api/projects/${encodeURIComponent(trail.id)}/users/${encodeURIComponent(user.id)}/progress`);
+                                const updated = await api.get<any>(`/api/projects/${encodeURIComponent(trail.id)}/users/${encodeURIComponent(user?.id || '')}/progress`);
                                 setEnrollment(prev => prev ? { ...prev, progress: updated.completionRate * 100 } : prev);
                               } catch (e) {
                                 // ignore
@@ -1074,6 +1190,11 @@ export default function AlunoAulaPlayer() {
           </div>
         </aside>
       </div>
+      {toast && (
+        <div className={`fixed right-4 bottom-6 z-50 px-4 py-2 rounded shadow-lg ${toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 }

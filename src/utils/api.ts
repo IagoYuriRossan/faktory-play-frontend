@@ -75,6 +75,37 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 
   if (!res.ok) {
+    // If unauthorized, try forcing a token refresh once and retry the request.
+    if (res.status === 401) {
+      try {
+        if (auth.currentUser) await auth.currentUser.getIdToken(true);
+        // retry with refreshed token
+        const refreshedToken = await getToken();
+        const retryRes = await fetch(`${BASE_URL}${path}`, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${refreshedToken}`,
+          },
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
+
+        const retryText = await retryRes.text().catch(() => '');
+        let retryData: any = null;
+        try { retryData = retryText ? JSON.parse(retryText) : null; } catch { retryData = retryText; }
+
+        if (retryRes.ok) return retryData as T;
+
+        const serverMessage = retryData && typeof retryData === 'object' ? retryData.message || retryData.error : undefined;
+        const apiError = new ApiError(retryRes.status, `${method} ${path}`, serverMessage);
+        console.error('[API] retry error', apiError.message, retryData);
+        throw apiError;
+      } catch (refreshErr) {
+        // fallthrough to original error handling below
+        console.warn('[API] token refresh+retry failed', refreshErr);
+      }
+    }
+
     const serverMessage = data && typeof data === 'object' ? data.message || data.error : undefined;
     const apiError = new ApiError(res.status, `${method} ${path}`, serverMessage);
     console.error(apiError.message, data);

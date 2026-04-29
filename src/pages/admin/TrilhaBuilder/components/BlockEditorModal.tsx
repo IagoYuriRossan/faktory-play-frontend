@@ -172,7 +172,7 @@ export function BlockEditorModal({ show, wysiwyg, cancelEditBlock, saveEditedBlo
               )}
 
               {/* ── WYSIWYG / Custom ── */}
-              {editingBlockType !== 'title' && editingBlockType !== 'video' && editingBlockType !== 'embed' && editingBlockType !== 'image' && (
+              {editingBlockType !== 'title' && editingBlockType !== 'video' && editingBlockType !== 'embed' && editingBlockType !== 'image' && editingBlockType !== 'quiz' && (
                 <>
                   {/* Toolbar */}
                   <div className="border border-slate-200 rounded-lg overflow-hidden shrink-0">
@@ -364,6 +364,21 @@ export function BlockEditorModal({ show, wysiwyg, cancelEditBlock, saveEditedBlo
                     )}
                   </div>
                 </>
+              )}
+
+              {/* ── Quiz block edit ── */}
+              {editingBlockType === 'quiz' && (
+                <div className="space-y-4">
+                  <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Questionnaire ID</div>
+                  <input
+                    autoFocus
+                    value={editingBlockPayload?.questionnaireId || ''}
+                    onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, questionnaireId: e.target.value }))}
+                    className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
+                    placeholder="ID do questionnaire (ex: quiz-123)"
+                  />
+                  <p className="text-[10px] text-slate-400">Insira o `questionnaireId` de um questionário existente para vinculá‑lo a este bloco.</p>
+                </div>
               )}
             </div>
 

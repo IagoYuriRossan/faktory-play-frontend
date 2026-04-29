@@ -149,6 +149,14 @@ export function useBlockEditor(deps: UseBlockEditorDeps) {
        setShowBlockEditor(true);
        return;
     }
+    
+     if (comp.type === 'quiz') {
+       setEditingBlockId(id);
+       setEditingBlockType('quiz');
+       setEditingBlockPayload(comp.payload || {});
+       setShowBlockEditor(true);
+       return;
+     }
   };
 
   const saveEditedBlock = () => {
@@ -173,6 +181,9 @@ export function useBlockEditor(deps: UseBlockEditorDeps) {
        comp.payload = { ...comp.payload, url: currentData };
     } else if (editingBlockType === 'image') {
        comp.type = 'image';
+       comp.payload = { ...comp.payload, ...editingBlockPayload };
+     } else if (editingBlockType === 'quiz') {
+       comp.type = 'quiz';
        comp.payload = { ...comp.payload, ...editingBlockPayload };
     }
 
