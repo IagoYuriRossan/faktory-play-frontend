@@ -414,8 +414,8 @@ export default function AdminClienteDetail() {
                                           const trail = allTrails.find(t => t.id === tid);
                                           return (
                                             <div key={tid} className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm hover:shadow-md transition-shadow">
-                                              {trail?.image ? (
-                                                <img src={trail.image} alt={trail.title} className="w-full h-36 object-cover rounded-md mb-3" />
+                                              {((trail as any)?.imageUrl) ? (
+                                                <img src={(trail as any).imageUrl} alt={trail.title} className="w-full h-36 object-cover rounded-md mb-3" />
                                               ) : (
                                                 <div className="w-full h-36 bg-slate-100 rounded-md mb-3 flex items-center justify-center text-slate-300">
                                                   <Image size={36} />

@@ -46,7 +46,7 @@ export default function AdminPosts() {
 
   // Editor state
   const [showEditor, setShowEditor] = useState(false);
-  const [editingPost, setEditingPost] = useState<Partial<Post> & typeof EMPTY_POST>(EMPTY_POST);
+  const [editingPost, setEditingPost] = useState<Partial<Post>>(EMPTY_POST as Partial<Post>);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newTag, setNewTag] = useState('');
   const [mediaUrl, setMediaUrl] = useState('');
@@ -93,7 +93,7 @@ export default function AdminPosts() {
       media: post.media || [],
       tags: post.tags || [],
       pinned: post.pinned || false,
-      visibility: post.visibility || 'public',
+      visibility: (post.visibility || 'public') as 'public' | 'company',
       companyId: post.companyId || null,
       publishedAt: post.publishedAt || new Date().toISOString(),
     });

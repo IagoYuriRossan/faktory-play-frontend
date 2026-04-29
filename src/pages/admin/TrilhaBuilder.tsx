@@ -688,7 +688,7 @@ export default function TrilhaBuilder() {
                     ) : (
                       <span
                         className="flex-1 truncate"
-                        onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(lesson.id, lesson.title, parentId); }}
+                        onDoubleClick={(e) => { e.stopPropagation(); setActiveModuleId(module.id); startEditLesson(lesson.id, lesson.title || '', parentId); }}
                         title={lesson.title || '(Sem título)'}
                       >
                         {lesson.title || '(Sem título)'}
@@ -698,7 +698,7 @@ export default function TrilhaBuilder() {
                   {editingLessonId !== lesson.id && (
                     <div className="flex items-center gap-0.5 shrink-0">
                       <button onClick={(e) => { e.stopPropagation(); addLesson(module.id, lesson.id); }} title="Adicionar subetapa" className="text-slate-400 hover:text-faktory-blue p-0.5 rounded"><Plus size={12} /></button>
-                      <button onClick={(e) => { e.stopPropagation(); startEditLesson(lesson.id, lesson.title, parentId); }} title="Renomear" className="text-slate-400 hover:text-faktory-blue p-0.5 rounded"><Pencil size={12} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); startEditLesson(lesson.id, lesson.title || '', parentId); }} title="Renomear" className="text-slate-400 hover:text-faktory-blue p-0.5 rounded"><Pencil size={12} /></button>
                       <button onClick={(e) => { e.stopPropagation(); removeLesson(module.id, lesson.id, parentId); }} title="Remover" className="text-slate-300 hover:text-red-500 p-0.5 rounded"><Trash2 size={12} /></button>
                     </div>
                   )}
