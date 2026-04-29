@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../../utils/api';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
@@ -160,8 +160,10 @@ export default function AlunoAulaPlayer() {
     const totalModulesInTrail = trail.modules.length;
     
     try {
-      await api.put(`/api/users/${user.id}/progress/${lesson.id}`, {
+      await api.put(`/api/users/${user.id}/trails/${trail.id}/lessons/${lesson.id}`, {
         completed: !isCompleted,
+        source: 'ui',
+        lastViewedAt: new Date().toISOString(),
         trailId: trail.id,
         moduleId: currentModule?.id,
         totalLessonsInTrail,
@@ -187,8 +189,10 @@ export default function AlunoAulaPlayer() {
       : [...((enrollment as any).completedSubetapas || []), sub.id];
 
     try {
-      await api.put(`/api/users/${user.id}/progress/${currentLesson.id}/subetapas/${sub.id}`, {
+      await api.put(`/api/users/${user.id}/trails/${trail.id}/lessons/${currentLesson.id}/subetapas/${sub.id}`, {
         completed: !isCompleted,
+        source: 'ui',
+        lastViewedAt: new Date().toISOString(),
         trailId: trail.id,
         moduleId: currentModule?.id,
         totalSubetapasInEtapa: currentLesson.subetapas?.length || 1
@@ -221,6 +225,32 @@ export default function AlunoAulaPlayer() {
     return url;
   };
 
+  const getVideoProvider = (url: string | undefined | null) => {
+    if (!url) return null;
+    const u = url.toString();
+    if (u.match(/(?:youtube\.com|youtu\.be)\//)) return 'youtube';
+    if (u.match(/vimeo\.com/)) return 'vimeo';
+    return null;
+  };
+
+  // Progress auto-mark config (persisted in localStorage)
+  const [showProgressConfig, setShowProgressConfig] = useState(false);
+  const [progressConfig, setProgressConfig] = useState(() => {
+    try {
+      const raw = localStorage.getItem('progressConfig');
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return {
+      enabled: true,
+      videoPercent: 50, // percent of video required
+      requireVisibility: true,
+      requirePlay: true,
+      nonVideoSeconds: 10, // fallback seconds for non-video
+    };
+  });
+
+  useEffect(() => { try { localStorage.setItem('progressConfig', JSON.stringify(progressConfig)); } catch {} }, [progressConfig]);
+
   const handleQuizSubmit = async () => {
     if (quizAnswer !== null && currentLesson && enrollment && trail && user) {
       const isCorrect = quizAnswer === currentLesson.quiz?.correctIndex;
@@ -229,8 +259,10 @@ export default function AlunoAulaPlayer() {
       if (isCorrect) {
         // Save as task completion
         try {
-          await api.put(`/api/users/${user.id}/progress/${currentLesson.id}/tasks/quiz`, {
+          await api.put(`/api/users/${user.id}/trails/${trail.id}/lessons/${currentLesson.id}/tasks/quiz`, {
             completed: true,
+            source: 'quiz',
+            lastViewedAt: new Date().toISOString(),
             trailId: trail.id,
             moduleId: currentModule?.id,
             score: 100
@@ -455,6 +487,214 @@ export default function AlunoAulaPlayer() {
   const effectiveQuestionnaireId: string | undefined =
     quizComponent?.payload?.questionnaireId || currentLesson.questionnaireId;
 
+  // Auto-mark hybrid: Visibility API for non-video content + player APIs for YouTube/Vimeo.
+  useEffect(() => {
+    if (!user || !trail || !enrollment || !currentLesson) return;
+    if (!progressConfig?.enabled) return;
+
+    const alreadyLesson = enrollment.completedLessons.includes(currentLesson.id);
+    const alreadySub = (enrollment as any).completedSubetapas?.includes(currentLesson.id);
+    if (alreadyLesson || alreadySub) return;
+
+    const findParentEtapa = () => {
+      for (const m of trail.modules) {
+        for (const etapa of m.etapas) {
+          if (etapa.subetapas && etapa.subetapas.some((s: any) => s.id === currentLesson.id)) return etapa;
+        }
+      }
+      return null;
+    };
+
+    const parent = findParentEtapa();
+    const thresholdSeconds = progressConfig.nonVideoSeconds || 10; // seconds of visible/play time required
+    let marked = false;
+
+    const markCompleted = async () => {
+      if (marked) return;
+      marked = true;
+      try {
+        if (parent) {
+          await api.put(`/api/users/${user.id}/trails/${trail.id}/lessons/${parent.id}/subetapas/${currentLesson.id}`, {
+            completed: true,
+            source: 'auto',
+            lastViewedAt: new Date().toISOString(),
+            trailId: trail.id,
+            moduleId: currentModule?.id,
+            totalSubetapasInEtapa: parent.subetapas?.length || 1,
+          });
+
+          setEnrollment(prev => prev ? ({
+            ...prev,
+            completedSubetapas: [...((prev as any).completedSubetapas || []), currentLesson.id]
+          } as any) : prev);
+        } else {
+          const totalLessonsInTrail = trail.modules.reduce((acc, m) => acc + (m.etapas?.length || 0), 0);
+          await api.put(`/api/users/${user.id}/trails/${trail.id}/lessons/${currentLesson.id}`, {
+            completed: true,
+            source: 'auto',
+            lastViewedAt: new Date().toISOString(),
+            trailId: trail.id,
+            moduleId: currentModule?.id,
+            totalLessonsInTrail,
+            totalModulesInTrail: trail.modules.length,
+          });
+
+          setEnrollment(prev => prev ? ({
+            ...prev,
+            completedLessons: [...(prev.completedLessons || []), currentLesson.id],
+            progress: Math.round(((prev.completedLessons ? prev.completedLessons.length : 0) + 1) / (totalLessonsInTrail || 1) * 100)
+          } as any) : prev);
+        }
+      } catch (e) {
+        console.error('Auto-mark progress failed:', e);
+      }
+    };
+
+    // Find iframe id used for this lesson (component or fallback)
+    const compVideo = currentLesson.components?.find((c: any) => (c.type === 'video' || c.type === 'iframe') && c.payload?.url);
+    const iframeId = compVideo ? `lesson-comp-${compVideo.id}` : `lesson-video-${currentLesson.id}`;
+    const iframeEl = document.getElementById(iframeId) as HTMLIFrameElement | null;
+    const provider = iframeEl?.dataset?.provider || getVideoProvider(getEmbedUrl(currentLesson.videoUrl || ''));
+
+    // Helpers to load external scripts
+    const loadScript = (src: string) => new Promise<void>((resolve, reject) => {
+      if (document.querySelector(`script[src="${src}"]`)) return resolve();
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = (e) => reject(e);
+      document.body.appendChild(s);
+    });
+
+    // Video providers: YouTube
+    let ytPlayer: any = null;
+    let ytInterval: any = null;
+
+    const setupYouTube = async () => {
+      try {
+        if (!(window as any).YT) {
+          (window as any).onYouTubeIframeAPIReady = () => { /* will be handled below */ };
+          await loadScript('https://www.youtube.com/iframe_api');
+          // wait until YT is available
+          await new Promise<void>((res) => {
+            const check = () => { if ((window as any).YT) res(); else setTimeout(check, 100); };
+            check();
+          });
+        }
+        ytPlayer = new (window as any).YT.Player(iframeId, {
+          events: {
+            onStateChange: (e: any) => {
+              const YT = (window as any).YT;
+              if (e.data === YT.PlayerState.PLAYING) {
+                // poll currentTime
+                if (ytInterval) clearInterval(ytInterval);
+                ytInterval = setInterval(async () => {
+                  try {
+                    const t = await ytPlayer.getCurrentTime();
+                    const duration = await ytPlayer.getDuration().catch(() => 0);
+                    if (progressConfig.videoPercent && duration > 0) {
+                      const pct = (t / duration) * 100;
+                      if (pct >= (progressConfig.videoPercent || 50) && (!progressConfig.requireVisibility || document.visibilityState === 'visible')) {
+                        clearInterval(ytInterval);
+                        markCompleted();
+                      }
+                    } else if (t >= thresholdSeconds) {
+                      clearInterval(ytInterval);
+                      markCompleted();
+                    }
+                  } catch (e) {
+                    // ignore
+                  }
+                }, 1000);
+              } else {
+                if (ytInterval) clearInterval(ytInterval);
+              }
+            }
+          }
+        });
+      } catch (e) {
+        console.error('Failed to setup YouTube player for auto-mark:', e);
+      }
+    };
+
+    // Vimeo
+    let vimeoPlayer: any = null;
+    const setupVimeo = async () => {
+      try {
+        await loadScript('https://player.vimeo.com/api/player.js');
+        const Player = (window as any).Vimeo?.Player;
+        if (!Player || !iframeEl) return;
+        vimeoPlayer = new Player(iframeEl);
+        vimeoPlayer.on('timeupdate', async (data: any) => {
+          try {
+            const duration = await vimeoPlayer.getDuration();
+            if (progressConfig.videoPercent && duration > 0) {
+              const pct = (data.seconds / duration) * 100;
+              if (pct >= (progressConfig.videoPercent || 50) && (!progressConfig.requireVisibility || document.visibilityState === 'visible')) {
+                markCompleted();
+              }
+            } else if (data.seconds >= thresholdSeconds) {
+              markCompleted();
+            }
+          } catch (e) {
+            // fallback
+            if (data.seconds >= thresholdSeconds) markCompleted();
+          }
+        });
+      } catch (e) {
+        console.error('Failed to setup Vimeo player for auto-mark:', e);
+      }
+    };
+
+    // Non-video: use Visibility API + interval
+    let visInterval: any = null;
+    let visibleSeconds = 0;
+    const startVisibilityCounter = () => {
+      if (visInterval) return;
+      visInterval = setInterval(() => {
+        if (document.visibilityState === 'visible' && document.hasFocus()) {
+          visibleSeconds += 1;
+          if (visibleSeconds >= thresholdSeconds) {
+            clearInterval(visInterval);
+            markCompleted();
+          }
+        }
+      }, 1000);
+    };
+    const stopVisibilityCounter = () => { if (visInterval) { clearInterval(visInterval); visInterval = null; } };
+
+    // Setup based on provider
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') stopVisibilityCounter(); else startVisibilityCounter();
+    };
+    const onWindowBlur = () => stopVisibilityCounter();
+    const onWindowFocus = () => startVisibilityCounter();
+
+    (async () => {
+      if ((provider === 'youtube' || provider === 'vimeo') && iframeEl) {
+        // For videos we require play events; do not use visibility counter for video progress
+        if (provider === 'youtube') await setupYouTube();
+        if (provider === 'vimeo') await setupVimeo();
+      } else {
+        startVisibilityCounter();
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        window.addEventListener('blur', onWindowBlur);
+        window.addEventListener('focus', onWindowFocus);
+      }
+    })();
+
+    return () => {
+      // cleanup
+      try { if (ytInterval) clearInterval(ytInterval); } catch {}
+      try { if (visInterval) clearInterval(visInterval); } catch {}
+      try { if (vimeoPlayer && vimeoPlayer.unload) vimeoPlayer.unload(); } catch {}
+      try { document.removeEventListener('visibilitychange', onVisibilityChange); } catch {}
+      try { window.removeEventListener('blur', onWindowBlur); } catch {}
+      try { window.removeEventListener('focus', onWindowFocus); } catch {}
+    };
+  }, [currentLesson, user, trail, enrollment]);
+
   return (
     <div className="flex flex-col h-screen bg-white">
       {/* Top Progress Bar & Breadcrumbs */}
@@ -485,6 +725,33 @@ export default function AlunoAulaPlayer() {
           <ChevronRight size={10} />
           <span className="text-slate-600 font-bold uppercase">{currentLesson.title}</span>
         </div>
+              <div className="ml-4">
+                <button onClick={() => setShowProgressConfig(v => !v)} className="text-xs px-2 py-1 border rounded">Config progresso</button>
+              </div>
+              {showProgressConfig && (
+                <div className="absolute right-4 top-14 bg-white border p-3 rounded shadow-md text-xs">
+                  <div className="flex items-center gap-2 mb-2">
+                    <input type="checkbox" id="pc-enabled" checked={progressConfig.enabled} onChange={e => setProgressConfig(p => ({ ...p, enabled: e.target.checked }))} />
+                    <label htmlFor="pc-enabled">Ativar auto-mark</label>
+                  </div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <label className="w-28">Video %</label>
+                    <input type="number" value={progressConfig.videoPercent} min={1} max={100} onChange={e => setProgressConfig(p => ({ ...p, videoPercent: Number(e.target.value) }))} className="w-16" />
+                  </div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <input type="checkbox" id="pc-visibility" checked={progressConfig.requireVisibility} onChange={e => setProgressConfig(p => ({ ...p, requireVisibility: e.target.checked }))} />
+                    <label htmlFor="pc-visibility">Exigir visibilidade da aba</label>
+                  </div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <input type="checkbox" id="pc-play" checked={progressConfig.requirePlay} onChange={e => setProgressConfig(p => ({ ...p, requirePlay: e.target.checked }))} />
+                    <label htmlFor="pc-play">Exigir play (vídeo)</label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="w-28">Texto (não-vídeo s)</label>
+                    <input type="number" value={progressConfig.nonVideoSeconds} min={1} onChange={e => setProgressConfig(p => ({ ...p, nonVideoSeconds: Number(e.target.value) }))} className="w-16" />
+                  </div>
+                </div>
+              )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -589,10 +856,15 @@ export default function AlunoAulaPlayer() {
                       );
                     }
                     if ((comp.type === 'video' || comp.type === 'iframe') && comp.payload.url) {
+                      const embed = getEmbedUrl(comp.payload.url);
+                      const provider = getVideoProvider(embed);
+                      const iframeId = `lesson-comp-${comp.id}`;
                       return (
                         <div key={comp.id} className="aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl ring-1 ring-slate-200">
                           <iframe
-                            src={getEmbedUrl(comp.payload.url)}
+                            id={iframeId}
+                            src={embed}
+                            data-provider={provider || ''}
                             className="w-full h-full"
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                             allowFullScreen
@@ -633,12 +905,21 @@ export default function AlunoAulaPlayer() {
               <>
                 {currentLesson.videoUrl && (
                   <div className="mb-8 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl ring-1 ring-slate-200">
-                    <iframe
-                      src={getEmbedUrl(currentLesson.videoUrl)}
-                      className="w-full h-full"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    />
+                    {(() => {
+                      const embed = getEmbedUrl(currentLesson.videoUrl);
+                      const provider = getVideoProvider(embed);
+                      const iframeId = `lesson-video-${currentLesson.id}`;
+                      return (
+                        <iframe
+                          id={iframeId}
+                          src={embed}
+                          data-provider={provider || ''}
+                          className="w-full h-full"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                        />
+                      );
+                    })()}
                   </div>
                 )}
                 {currentLesson.content && (
