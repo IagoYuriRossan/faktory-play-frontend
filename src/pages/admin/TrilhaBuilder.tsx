@@ -13,6 +13,7 @@ import { cn } from '../../utils/utils';
 import { Trail, Module, Lesson } from '../../@types/index';
 import DOMPurify from 'dompurify';
 import { api } from '../../utils/api';
+import { createProjectQuestionnaire } from '../../services/questionnaireService';
 import { useWysiwygEditor } from './TrilhaBuilder/hooks/useWysiwygEditor';
 import { useTrailData } from './TrilhaBuilder/hooks/useTrailData';
 import { useModuleTree } from './TrilhaBuilder/hooks/useModuleTree';
@@ -166,7 +167,7 @@ export default function TrilhaBuilder() {
         return;
       }
 
-      const res = await api.post<any>(`/api/projects/${encodeURIComponent(projectId)}/questionnaires`, payload);
+      const res = await createProjectQuestionnaire(projectId, payload);
       const qid = res?.id || res?.questionnaireId || `q-${Date.now()}`;
       const qtitle = res?.title || payload.title;
       const blockHtml = `<div class="quiz-block" data-questionnaire-id="${qid}"><strong>${qtitle}</strong><p>Questionário vinculado (clique para editar)</p></div>`;
