@@ -18,6 +18,266 @@ import {
 } from 'lucide-react';
 import { cn } from '../../utils/utils';
 
+function QuestionnaireRunner({
+  questionnaireId,
+  projectId,
+  userId,
+  trailId,
+  enrollmentId,
+  moduleId,
+  onClose,
+  onSubmitted,
+}: {
+  questionnaireId: string;
+  projectId?: string;
+  userId?: string;
+  trailId?: string;
+  enrollmentId?: string;
+  moduleId?: string;
+  onClose: () => void;
+  onSubmitted?: (res: any) => void;
+}) {
+  const { questionnaire, loading: qLoading, error } = useQuestionnaire(questionnaireId);
+  const [localAttemptId, setLocalAttemptId] = useState<string | null>(null);
+  const [localAnswers, setLocalAnswers] = useState<Record<string, any>>({});
+  const [starting, setStarting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [missingQuestions, setMissingQuestions] = useState<string[]>([]);
+  const questionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  const handleStart = async () => {
+    setStarting(true);
+    try {
+      const res = await startAttempt(questionnaireId, {
+        trailId,
+        enrollmentId,
+        moduleId,
+      });
+      setLocalAttemptId(res.attemptId);
+      // focus first question after starting
+      setTimeout(() => {
+        const firstId = questionnaire?.questions?.[0]?.id;
+        const el = firstId ? questionRefs.current[firstId] : null;
+        if (el) {
+          try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+          const input = el.querySelector('textarea, input[type="radio"], input[type="checkbox"]') as HTMLElement | null;
+          if (input) input.focus();
+        }
+      }, 60);
+    } catch (e) {
+      console.error('start attempt error', e);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const handleChangeOption = (questionId: string, optionId: string, type: string) => {
+    setLocalAnswers(prev => {
+      const cur = { ...prev };
+      if (type === 'single_choice') {
+        cur[questionId] = [optionId];
+      } else if (type === 'multiple_choice') {
+        const arr: string[] = Array.isArray(cur[questionId]) ? [...cur[questionId]] : [];
+        if (arr.includes(optionId)) {
+          cur[questionId] = arr.filter(a => a !== optionId);
+        } else {
+          arr.push(optionId);
+          cur[questionId] = arr;
+        }
+      }
+      return cur;
+    });
+  };
+
+  const handleChangeText = (questionId: string, text: string) => {
+    setLocalAnswers(prev => ({ ...prev, [questionId]: text }));
+  };
+
+  const validateAllAnswered = () => {
+    if (!questionnaire || !questionnaire.questions) return true;
+    const missing: string[] = [];
+    questionnaire.questions.forEach((q: any) => {
+      const val = localAnswers[q.id];
+      if (q.type === 'open') {
+        if (!val || (typeof val === 'string' && val.trim() === '')) missing.push(q.id);
+      } else if (q.type === 'single_choice') {
+        const has = Array.isArray(val) ? val.length > 0 : !!val;
+        if (!has) missing.push(q.id);
+      } else if (q.type === 'multiple_choice') {
+        const has = Array.isArray(val) ? val.length > 0 : !!val;
+        if (!has) missing.push(q.id);
+      }
+    });
+    setMissingQuestions(missing);
+    setValidationError(missing.length ? 'Por favor responda todas as perguntas antes de enviar.' : null);
+    if (missing.length) {
+      setTimeout(() => {
+        const first = questionRefs.current[missing[0]];
+        if (first) {
+          try { first.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+          const input = first.querySelector('textarea, input[type="radio"], input[type="checkbox"]') as HTMLElement | null;
+          if (input) input.focus();
+        }
+      }, 60);
+    }
+    return missing.length === 0;
+  };
+
+  const handleSubmit = async () => {
+    if (!localAttemptId) return;
+    if (!validateAllAnswered()) return;
+    setSubmitting(true);
+    try {
+      const answers = Object.keys(localAnswers).map(qid => {
+        const val = localAnswers[qid];
+        if (Array.isArray(val)) return { questionId: qid, selectedOptionIds: val };
+        const isString = typeof val === 'string';
+        if (isString) return { questionId: qid, textAnswer: val };
+        return { questionId: qid, selectedOptionIds: val };
+      });
+      const res = await submitAttempt(localAttemptId, answers, { enrollmentId, trailId });
+      const enriched = { ...res };
+      if (questionnaire && questionnaire.questions) {
+        enriched.perQuestion = (enriched.perQuestion || []).map((pq: any) => {
+          const q = questionnaire.questions.find((x: any) => x.id === pq.questionId);
+          if (q && q.type === 'open') {
+            return { ...pq, pendingCorrection: true };
+          }
+          return pq;
+        });
+      }
+      setResult(enriched);
+      try {
+        if (projectId && userId) {
+          await api.get(`/api/projects/${encodeURIComponent(projectId)}/users/${encodeURIComponent(userId)}/progress`);
+          await api.get(`/api/projects/${encodeURIComponent(projectId)}/progress`);
+          try { window.dispatchEvent(new CustomEvent('project:progress-updated', { detail: { projectId } })); } catch (e) { /* ignore */ }
+        }
+      } catch (e) {
+        // ignore errors on refresh
+      }
+      if (onSubmitted) onSubmitted(enriched);
+    } catch (e) {
+      console.error('submit error', e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 p-4 mt-4">
+      {qLoading && <div>Carregando questionário...</div>}
+      {error && <div className="text-red-500">Erro ao carregar o questionário.</div>}
+      {questionnaire && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <div className="font-bold">{questionnaire.title}</div>
+              <div className="text-xs text-slate-500">{questionnaire.description}</div>
+            </div>
+            <div className="text-xs text-slate-400">{localAttemptId ? 'Tentativa iniciada' : 'Pronto'}</div>
+          </div>
+
+          {!localAttemptId && (
+            <div className="flex gap-2">
+              <button onClick={handleStart} className="bg-faktory-blue text-white px-4 py-2 rounded font-bold" disabled={starting}>
+                {starting ? 'Iniciando...' : 'Começar'}
+              </button>
+              <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+            </div>
+          )}
+
+          {localAttemptId && (
+            <div className="mt-4 space-y-4">
+              {questionnaire.questions.map((q: any) => {
+                const per = result?.perQuestion?.find((p: any) => p.questionId === q.id) || null;
+                const missing = missingQuestions.includes(q.id);
+                const statusClass = per ? (per.isCorrect ? 'border-green-200 bg-green-50' : (per.pendingCorrection ? 'border-amber-200 bg-amber-50' : 'border-red-200 bg-red-50')) : (missing ? 'border-red-100 bg-red-50' : 'bg-slate-50');
+                return (
+                  <div key={q.id} ref={el => { questionRefs.current[q.id] = el; }} className={`p-3 border rounded ${statusClass}`}>
+                    <div className="font-medium mb-2 flex items-center gap-2">
+                      {per ? (per.isCorrect ? <span className="text-green-600">✔</span> : (per.pendingCorrection ? <span className="text-amber-600">⏳</span> : <span className="text-red-600">✖</span>)) : (missing ? <span className="text-red-500">⚠</span> : null)}
+                      <div>{q.text}</div>
+                    </div>
+                    {q.type === 'open' && (
+                      <textarea
+                        className="w-full p-2 border rounded"
+                        value={localAnswers[q.id] || ''}
+                        onChange={e => handleChangeText(q.id, e.target.value)}
+                        disabled={!!result}
+                      />
+                    )}
+                    {(q.type === 'single_choice' || q.type === 'multiple_choice') && (
+                      <div className="space-y-2">
+                        {q.options?.map((opt: any) => (
+                          <label key={opt.id} className="flex items-center gap-2">
+                            <input
+                              type={q.type === 'single_choice' ? 'radio' : 'checkbox'}
+                              name={q.id}
+                              checked={Array.isArray(localAnswers[q.id]) ? localAnswers[q.id].includes(opt.id) : localAnswers[q.id]?.[0] === opt.id}
+                              onChange={() => handleChangeOption(q.id, opt.id, q.type)}
+                              disabled={!!result}
+                            />
+                            <span>{opt.text}</span>
+                            {per && per.selectedOptionIds && Array.isArray(per.selectedOptionIds) && (
+                              <span className="ml-2 text-sm text-slate-600">{per.selectedOptionIds.includes(opt.id) ? (per.isCorrect ? '✔️' : '❌') : ''}</span>
+                            )}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                    {per && (
+                      <div className="mt-2 text-sm">
+                        {per.pendingCorrection ? <span className="text-amber-700">Pendente de correção</span> : (
+                          per.isCorrect ? <span className="text-green-700">Correta — +{per.pointsAwarded} pts</span> : <span className="text-red-700">Incorreta — +{per.pointsAwarded} pts</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              <div className="flex items-center gap-2">
+                <div className="flex flex-col">
+                  {validationError && <div className="text-red-600 text-sm mb-2">{validationError}</div>}
+                  <button onClick={handleSubmit} disabled={submitting || !!result} className="bg-green-600 text-white px-4 py-2 rounded font-bold">
+                    {submitting ? 'Enviando...' : (result ? 'Enviado' : 'Enviar respostas')}
+                  </button>
+                </div>
+                <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+              </div>
+            </div>
+          )}
+
+          {result && (
+            <div className="mt-4 p-3 bg-white border rounded">
+              <div className="font-bold">Resultado</div>
+              <div className="text-sm">Score: {result.score} / {result.maxScore}</div>
+              {result.perQuestion && Array.isArray(result.perQuestion) && (
+                <div className="mt-2">
+                  <div className="font-medium">Detalhes por questão:</div>
+                  <ul className="text-sm list-disc ml-5">
+                    {result.perQuestion.map((pq: any) => (
+                      <li key={pq.questionId}>
+                        Q: {pq.questionId} — {pq.isCorrect ? 'Correta' : 'Incorreta'} — {pq.pointsAwarded} pts {pq.pendingCorrection ? '(pendente de correção)' : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="mt-2">
+                <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AlunoAulaPlayer() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -579,200 +839,6 @@ export default function AlunoAulaPlayer() {
     }
   };
 
-  // Inline component to run backend questionnaire flows
-  function QuestionnaireRunner({
-    questionnaireId,
-    projectId,
-    userId,
-    onClose,
-    onSubmitted,
-  }: {
-    questionnaireId: string;
-    projectId?: string;
-    userId?: string;
-    onClose: () => void;
-    onSubmitted?: (res: any) => void;
-  }) {
-    const { questionnaire, loading: qLoading, error, reload } = useQuestionnaire(questionnaireId);
-    const [localAttemptId, setLocalAttemptId] = useState<string | null>(null);
-    const [localAnswers, setLocalAnswers] = useState<Record<string, any>>({});
-    const [starting, setStarting] = useState(false);
-    const [submitting, setSubmitting] = useState(false);
-    const [result, setResult] = useState<any>(null);
-
-    const handleStart = async () => {
-      setStarting(true);
-      try {
-        const res = await startAttempt(questionnaireId, {
-          trailId: trail?.id,
-          enrollmentId: enrollment?.id,
-          moduleId: currentModule?.id,
-        });
-        setLocalAttemptId(res.attemptId);
-        // store globally as well for other flows
-        try { setAttemptId(res.attemptId); } catch (e) { /* ignore if unavailable */ }
-      } catch (e) {
-        console.error('start attempt error', e);
-      } finally {
-        setStarting(false);
-      }
-    };
-
-    const handleChangeOption = (questionId: string, optionId: string, type: string) => {
-      setLocalAnswers(prev => {
-        const cur = { ...prev };
-        if (type === 'single_choice') {
-          cur[questionId] = [optionId];
-        } else if (type === 'multiple_choice') {
-          const arr: string[] = Array.isArray(cur[questionId]) ? [...cur[questionId]] : [];
-          if (arr.includes(optionId)) {
-            cur[questionId] = arr.filter(a => a !== optionId);
-          } else {
-            arr.push(optionId);
-            cur[questionId] = arr;
-          }
-        }
-        return cur;
-      });
-    };
-
-    const handleChangeText = (questionId: string, text: string) => {
-      setLocalAnswers(prev => ({ ...prev, [questionId]: text }));
-    };
-
-    const handleSubmit = async () => {
-      if (!localAttemptId) return;
-      setSubmitting(true);
-      try {
-        const answers = Object.keys(localAnswers).map(qid => {
-          const val = localAnswers[qid];
-          if (Array.isArray(val)) return { questionId: qid, selectedOptionIds: val };
-          const isString = typeof val === 'string';
-          if (isString) return { questionId: qid, textAnswer: val };
-          return { questionId: qid, selectedOptionIds: val };
-        });
-        const res = await submitAttempt(localAttemptId, answers, { enrollmentId: enrollment?.id, trailId: trail?.id });
-        // mark open questions as pending in UI if any
-        const enriched = { ...res };
-        if (questionnaire && questionnaire.questions) {
-          enriched.perQuestion = (enriched.perQuestion || []).map((pq: any) => {
-            const q = questionnaire.questions.find(x => x.id === pq.questionId);
-            if (q && q.type === 'open') {
-              return { ...pq, pendingCorrection: true };
-            }
-            return pq;
-          });
-        }
-        setResult(enriched);
-        try { setSubmitResult(enriched); } catch (e) { /* ignore */ }
-        // After submission, refresh user and project progress and notify listeners
-        try {
-          if (projectId && userId) {
-            await api.get(`/api/projects/${encodeURIComponent(projectId)}/users/${encodeURIComponent(userId)}/progress`);
-            await api.get(`/api/projects/${encodeURIComponent(projectId)}/progress`);
-            // notify other components (Cronograma) to reload
-            try { window.dispatchEvent(new CustomEvent('project:progress-updated', { detail: { projectId } })); } catch (e) { /* ignore */ }
-          }
-        } catch (e) {
-          // ignore errors on refresh
-        }
-        if (onSubmitted) onSubmitted(enriched);
-      } catch (e) {
-        console.error('submit error', e);
-      } finally {
-        setSubmitting(false);
-      }
-    };
-
-    return (
-      <div className="bg-white rounded-lg border border-slate-200 p-4 mt-4">
-        {qLoading && <div>Carregando questionário...</div>}
-        {error && <div className="text-red-500">Erro ao carregar o questionário.</div>}
-        {questionnaire && (
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <div className="font-bold">{questionnaire.title}</div>
-                <div className="text-xs text-slate-500">{questionnaire.description}</div>
-              </div>
-              <div className="text-xs text-slate-400">{localAttemptId ? 'Tentativa iniciada' : 'Pronto'}</div>
-            </div>
-
-            {!localAttemptId && (
-              <div className="flex gap-2">
-                <button onClick={handleStart} className="bg-faktory-blue text-white px-4 py-2 rounded font-bold" disabled={starting}>
-                  {starting ? 'Iniciando...' : 'Começar'}
-                </button>
-                <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
-              </div>
-            )}
-
-            {localAttemptId && !result && (
-              <div className="mt-4 space-y-4">
-                {questionnaire.questions.map(q => (
-                  <div key={q.id} className="p-3 border rounded bg-slate-50">
-                    <div className="font-medium mb-2">{q.text}</div>
-                    {q.type === 'open' && (
-                      <textarea
-                        className="w-full p-2 border rounded"
-                        value={localAnswers[q.id] || ''}
-                        onChange={e => handleChangeText(q.id, e.target.value)}
-                      />
-                    )}
-                    {(q.type === 'single_choice' || q.type === 'multiple_choice') && (
-                      <div className="space-y-2">
-                        {q.options?.map(opt => (
-                          <label key={opt.id} className="flex items-center gap-2">
-                            <input
-                              type={q.type === 'single_choice' ? 'radio' : 'checkbox'}
-                              name={q.id}
-                              checked={Array.isArray(localAnswers[q.id]) ? localAnswers[q.id].includes(opt.id) : localAnswers[q.id]?.[0] === opt.id}
-                              onChange={() => handleChangeOption(q.id, opt.id, q.type)}
-                            />
-                            <span>{opt.text}</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-
-                <div className="flex items-center gap-2">
-                  <button onClick={handleSubmit} disabled={submitting} className="bg-green-600 text-white px-4 py-2 rounded font-bold">
-                    {submitting ? 'Enviando...' : 'Enviar respostas'}
-                  </button>
-                  <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
-                </div>
-              </div>
-            )}
-
-            {result && (
-              <div className="mt-4 p-3 bg-white border rounded">
-                <div className="font-bold">Resultado</div>
-                <div className="text-sm">Score: {result.score} / {result.maxScore}</div>
-                {result.perQuestion && Array.isArray(result.perQuestion) && (
-                  <div className="mt-2">
-                    <div className="font-medium">Detalhes por questão:</div>
-                    <ul className="text-sm list-disc ml-5">
-                      {result.perQuestion.map((pq: any) => (
-                        <li key={pq.questionId}>
-                          Q: {pq.questionId} — {pq.isCorrect ? 'Correta' : 'Incorreta'} — {pq.pointsAwarded} pts {pq.pendingCorrection ? '(pendente de correção)' : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <div className="mt-2">
-                  <button onClick={onClose} className="px-4 py-2 rounded border">Fechar</button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#f4f7f9]">
@@ -1081,17 +1147,20 @@ export default function AlunoAulaPlayer() {
                 {showQuestionnaire && (
                   <div className="fixed inset-0 z-50 flex items-center justify-center">
                     <div className="absolute inset-0 bg-black/40" onClick={() => { setShowQuestionnaire(false); }} />
-                    <div className="relative z-60 w-[95%] max-w-3xl">
+                    <div className="relative z-60 w-[95%] max-w-4xl">
                       <div className="bg-white rounded-lg shadow-lg overflow-hidden">
                         <div className="p-4 border-b flex items-center justify-between">
                           <div className="font-bold">Questionário</div>
                           <button onClick={() => { setShowQuestionnaire(false); setAttemptId(null); setSubmitResult(null); setAnswersMap({}); }} className="text-slate-500 px-2 py-1">Fechar</button>
                         </div>
-                        <div className="p-4">
-                          <QuestionnaireRunner
+                          <div className="p-4 max-h-[80vh] overflow-auto">
+                            <QuestionnaireRunner
                             questionnaireId={effectiveQuestionnaireId!}
                             projectId={trail.id}
                             userId={user?.id || ''}
+                            trailId={trail?.id}
+                            enrollmentId={enrollment?.id}
+                            moduleId={currentModule?.id}
                             onClose={() => { setShowQuestionnaire(false); setAttemptId(null); setSubmitResult(null); setAnswersMap({}); }}
                             onSubmitted={async (res: any) => {
                               setSubmitResult(res);

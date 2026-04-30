@@ -1,6 +1,7 @@
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { Minus, Undo2, Redo2 } from 'lucide-react';
 import type { WysiwygEditorState } from '../hooks/useWysiwygEditor';
+import { QuestionnaireBlockEditor } from './QuestionnaireBlockEditor';
 
 interface BlockEditorModalProps {
   show: boolean;
@@ -9,9 +10,12 @@ interface BlockEditorModalProps {
   saveEditedBlock: () => void;
   getEmbedUrl: (url: string) => string;
   triggerImageUpload?: () => void;
+  showToast: (msg: string) => void;
+  projectId?: string;
 }
 
-export function BlockEditorModal({ show, wysiwyg, cancelEditBlock, saveEditedBlock, getEmbedUrl, triggerImageUpload }: BlockEditorModalProps) {
+export function BlockEditorModal(props: BlockEditorModalProps) {
+  const { show, wysiwyg, cancelEditBlock, saveEditedBlock, getEmbedUrl, triggerImageUpload, showToast, projectId } = props;
   const {
     editingBlockId, editingBlockType, editingBlockHtml,
     editingBlockPayload, setEditingBlockPayload,
@@ -366,25 +370,51 @@ export function BlockEditorModal({ show, wysiwyg, cancelEditBlock, saveEditedBlo
                 </>
               )}
 
-              {/* ── Quiz block edit ── */}
+              {/* -- Quiz block edit -- */}
               {editingBlockType === 'quiz' && (
-                <div className="space-y-4">
-                  <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Questionnaire ID</div>
-                  <input
-                    autoFocus
-                    value={editingBlockPayload?.questionnaireId || ''}
-                    onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, questionnaireId: e.target.value }))}
-                    className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
-                    placeholder="ID do questionnaire (ex: quiz-123)"
-                  />
-                  <p className="text-[10px] text-slate-400">Insira o `questionnaireId` de um questionário existente para vinculá‑lo a este bloco.</p>
+                <div className="space-y-6">
+                  <div className="space-y-4 pb-6 border-b border-slate-100">
+                    <div className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Vinculo do Questionario</div>
+                    {console.log('[Modal] Rendering Quiz Section. Payload:', editingBlockPayload)}
+                    <input
+                      autoFocus
+                      value={editingBlockPayload?.questionnaireId || ''}
+                      onChange={(e) => setEditingBlockPayload(prev => ({ ...prev, questionnaireId: e.target.value }))}
+                      className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-faktory-blue/30"
+                      placeholder="ID do questionnaire (ex: quiz-123)"
+                    />
+                    <p className="text-[10px] text-slate-400">Este ID identifica qual questionario sera exibido neste bloco.</p>
+                  </div>
+
+                  {editingBlockPayload?.questionnaireId ? (
+                    <QuestionnaireBlockEditor 
+                      questionnaireId={editingBlockPayload.questionnaireId} 
+                      showToast={showToast}
+                      projectId={projectId}
+                    />
+                  ) : (
+                    <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-xl">
+                      <p className="text-slate-400 text-sm">Insira um ID acima para editar as questões.</p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
             <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex justify-end gap-2 shrink-0">
               <button onClick={cancelEditBlock} className="px-4 py-2 bg-white border border-slate-200 rounded hover:bg-slate-50">Cancelar</button>
-              <button onClick={saveEditedBlock} className="px-4 py-2 bg-faktory-blue text-white rounded font-bold hover:bg-faktory-blue/90">Salvar</button>
+              <button 
+                onClick={async () => {
+                  if (editingBlockType === 'quiz' && (window as any).__triggerQuestionnaireSave) {
+                    console.log('[Modal] Triggering unified questionnaire save...');
+                    await (window as any).__triggerQuestionnaireSave();
+                  }
+                  saveEditedBlock();
+                }} 
+                className="px-4 py-2 bg-faktory-blue text-white rounded font-bold hover:bg-faktory-blue/90"
+              >
+                Salvar
+              </button>
             </div>
           </motion.div>
         </div>

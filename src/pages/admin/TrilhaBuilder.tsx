@@ -27,7 +27,7 @@ import { ContentArea } from './TrilhaBuilder/components/ContentArea';
 import { createLogoContent, genBlock, genId, getEmbedUrl, parseBlocks } from './TrilhaBuilder/utils/contentBlocks';
 
 export default function TrilhaBuilder() {
-  // ── UI-only state (not extracted to hooks) ──
+  // -- UI-only state (not extracted to hooks) --
   const [showBlockEditor, setShowBlockEditor] = useState(false);
   const [titleHovered, setTitleHovered] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
@@ -46,7 +46,7 @@ export default function TrilhaBuilder() {
   const [pendingFiles, setPendingFiles] = useState<Record<string, { file: File; moduleId: string; etapaId: string }>>({});
   const isMainImageUploadRef = useRef(false);
 
-  // ── Extracted hooks ──
+  // -- Extracted hooks --
   const trail = useTrailData();
   const {
     id, trailId, navigate,
@@ -105,7 +105,7 @@ export default function TrilhaBuilder() {
     getActiveLesson, getActiveLessonTitleHtml,
   } = etapaTree;
 
-  // ── Block editor hook ──
+  // -- Block editor hook --
   const blockEditor = useBlockEditor({
     activeLesson: getActiveLesson(),
     updateLesson,
@@ -138,49 +138,47 @@ export default function TrilhaBuilder() {
   // Create questionnaire on server and insert a quiz block linked to it
   const createAndAddQuizBlock = async () => {
     const al = getActiveLesson();
-    if (!al) { showToast('Selecione uma aula antes de adicionar o Questionário'); return; }
+    if (!al) { 
+      showToast('Selecione uma aula antes de adicionar o Questionário'); 
+      return; 
+    }
+    
     try {
       setSaving(true);
       const payload = {
-        title: `${trailData.title || 'Trilha'} — ${al.title || 'Questionário'}`,
+        title: `${trailData.title || 'Trilha'} - ${al.title || 'Questionário'}`,
         description: 'Questionário criado pelo editor',
-        trailId: trailId || undefined,
+        trailId: (id && id !== 'nova') ? id : (trailId || undefined),
         moduleId: activeModuleId,
-        lessonId: activeLessonId,
-        // backend requires questions to be a non-empty array — add a placeholder open question
+        lessonId: al.id,
         questions: [
           {
             type: 'open',
             text: 'Pergunta de exemplo (edite)',
+            points: 1,
           },
         ] as any[]
       };
-      // Try project-scoped endpoint first (some backends expose questionnaires under projects)
+
       const projectId = (id && id !== 'nova') ? id : (trailId || undefined);
+      
       if (!projectId) {
-        // No project context: create local placeholder block and inform the user
-        showToast('Não é possível criar questionário: projeto não identificado. Criei um bloco local para editar.');
         const fallbackId = `local-${Date.now()}`;
-        const blockHtml = `<div class="quiz-block" data-questionnaire-id="${fallbackId}"><strong>Questionário (local)</strong><p>Edite para vincular</p></div>`;
-        const block = genBlock(blockHtml, 'quiz');
-        updateLesson({ content: ((getActiveLesson() as any)?.content || '') + '\n' + block } as any);
+        addBlock('quiz', { questionnaireId: fallbackId });
+        showToast('Projeto não identificado. Bloco local criado.');
         return;
       }
 
       const res = await createProjectQuestionnaire(projectId, payload);
       const qid = res?.id || res?.questionnaireId || `q-${Date.now()}`;
-      const qtitle = res?.title || payload.title;
-      const blockHtml = `<div class="quiz-block" data-questionnaire-id="${qid}"><strong>${qtitle}</strong><p>Questionário vinculado (clique para editar)</p></div>`;
-      const block = genBlock(blockHtml, 'quiz');
-      updateLesson({ content: ((getActiveLesson() as any)?.content || '') + '\n' + block } as any);
-      showToast('Questionário criado e adicionado como bloco');
+
+      addBlock('quiz', { questionnaireId: qid });
+      showToast('Questionário vinculado com sucesso!');
     } catch (err) {
       console.error('Erro criando questionnaire:', err);
-      showToast('Erro ao criar questionário — bloco local criado');
       const fallbackId = `local-${Date.now()}`;
-      const blockHtml = `<div class="quiz-block" data-questionnaire-id="${fallbackId}"><strong>Questionário (local)</strong><p>Edite para vincular</p></div>`;
-      const block = genBlock(blockHtml, 'quiz');
-      updateLesson({ content: ((getActiveLesson() as any)?.content || '') + '\n' + block } as any);
+      addBlock('quiz', { questionnaireId: fallbackId });
+      showToast('Erro na API - Bloco local criado para edição');
     } finally {
       setSaving(false);
     }
@@ -188,7 +186,7 @@ export default function TrilhaBuilder() {
 
   
 
-  // ── Actions menu close handler ──
+  // -- Actions menu close handler --
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       if (!showActionsMenu) return;
@@ -201,7 +199,7 @@ export default function TrilhaBuilder() {
     return () => { document.removeEventListener('mousedown', onDocClick); document.removeEventListener('keydown', onKey); };
   }, [showActionsMenu]);
 
-  // ── Drag & drop refs ──
+  // -- Drag and drop refs --
   const dragBlockIdRef = useRef<string | null>(null);
   const dragModuleIdRef = useRef<string | null>(null);
   const dragLessonIdRef = useRef<string | null>(null);
@@ -210,7 +208,7 @@ export default function TrilhaBuilder() {
   const dragPageTitleRef = useRef<boolean>(false);
   const dragImageRef = useRef<string | null>(null);
 
-  // ── Remaining refs ──
+  // -- Remaining refs --
   const blocksAreaRef = useRef<HTMLDivElement | null>(null);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -227,7 +225,7 @@ export default function TrilhaBuilder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLessonId]);
 
-  // ── Lesson edit helpers (depend on UI state) ──
+  // -- Lesson edit helpers (depend on UI state) --
   const saveEditLesson = () => {
     if (!editingLessonId || !activeModuleId) return;
     const applyToModule = (modules: Module[], moduleId: string, fn: (m: Module) => Module): Module[] =>
@@ -981,7 +979,7 @@ export default function TrilhaBuilder() {
             ) : lastSaved ? (
               <>
                 <div className="w-1.5 h-1.5 bg-green-400 rounded-full"></div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase">Salvo às {lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase">Salvo as {lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
               </>
             ) : null}
           </div>
@@ -1017,7 +1015,7 @@ export default function TrilhaBuilder() {
               className="px-3 py-1 text-[13px] border rounded flex items-center gap-2 bg-white"
               title="Ações"
             >
-              Ações
+              Acoes
               <ChevronDown size={14} />
             </button>
 
@@ -1456,130 +1454,37 @@ export default function TrilhaBuilder() {
                     </div>
                   )}
 
-                  {/* Blocos da aula — área de conteúdo principal (agora usa ContentArea extraído) */}
+                  {/* Blocos da aula - área de conteúdo principal (agora usa ContentArea extraído) */}
                   <ContentArea 
                     activeLesson={activeLesson} 
                     updateLesson={updateLesson} 
                     showToast={showToast} 
-                    blockEditor={blockEditor}
+                  blockEditor={blockEditor}
                     handleRemoveBlock={handleRemoveBlockWithCloudinary}
                     handleReplaceImage={handleReplaceImage}
                   />
 
-                  {/* Quiz Section */}
-                  {activeLesson.quiz ? (
-                    <div className="mt-10 pt-10 border-t border-slate-100">
-                      {/* === Bloco CTA — "Fazer questionário" === */}
-                      <div
-                        className={`group relative rounded-lg border transition-all bg-white mb-6 ${hoveredBlockId === '__quiz_cta__' ? 'border-faktory-blue/50 shadow-sm' : 'border-slate-200'}`}
-                        onMouseEnter={() => setHoveredBlockId('__quiz_cta__')}
-                        onMouseLeave={() => setHoveredBlockId(null)}
-                      >
-                        {hoveredBlockId === '__quiz_cta__' && (
-                          <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
-                            <div className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded select-none">
-                              <HelpCircle size={11} />
-                              Botão — Fazer Questionário
-                            </div>
-                            <div className="flex items-center gap-0.5">
-                              <button
-                                onClick={() => updateLesson({ quiz: undefined })}
-                                className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
-                                title="Remover questionário"
-                              ><Trash2 size={13} /></button>
-                            </div>
-                          </div>
-                        )}
-                        <div className={`p-6 flex flex-col items-center gap-3 ${hoveredBlockId === '__quiz_cta__' ? 'pt-10' : ''}`}>
-                          <p className="text-sm text-slate-500 text-center">O questionário de fixação será exibido ao aluno após clicar no botão abaixo:</p>
-                          <button className="px-6 py-2.5 bg-faktory-blue text-white rounded-lg font-bold text-sm pointer-events-none select-none shadow">
-                            Fazer questionário
-                          </button>
+                  {/* Quiz - adicionado como bloco de componente */}
+                  {!activeLesson.components?.some(c => c.type === 'quiz') && (
+                    <div className="mt-12 pt-10 border-t border-slate-100">
+                      <div className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-2xl p-8 flex flex-col items-center text-center gap-4">
+                        <div className="w-16 h-16 rounded-full bg-white shadow-sm flex items-center justify-center text-faktory-blue">
+                          <HelpCircle size={32} />
                         </div>
-                      </div>
-
-                      {/* === Bloco de edição do quiz === */}
-                      <div
-                        className={`group relative rounded-lg border transition-all bg-white ${hoveredBlockId === '__quiz__' ? 'border-faktory-blue/50 shadow-sm' : 'border-slate-200'}`}
-                        onMouseEnter={() => setHoveredBlockId('__quiz__')}
-                        onMouseLeave={() => setHoveredBlockId(null)}
-                      >
-                        {hoveredBlockId === '__quiz__' && (
-                          <div className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-2 py-1 bg-white/95 backdrop-blur-sm border-b border-faktory-blue/20 shadow-sm rounded-t-lg">
-                            <div className="flex items-center gap-1 bg-faktory-blue text-white text-[10px] font-bold px-2 py-0.5 rounded select-none">
-                              <HelpCircle size={11} />
-                              Questionário de Fixação
-                            </div>
-                            <div className="flex items-center gap-0.5">
-                              <button
-                                onClick={() => {
-                                  const opts = [...(activeLesson.quiz?.options || []), ''];
-                                  updateLesson({ quiz: { ...activeLesson.quiz!, options: opts } });
-                                }}
-                                className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-faktory-blue transition-colors"
-                                title="Adicionar opção"
-                              ><Plus size={13} /></button>
-                              <button
-                                onClick={() => updateLesson({ quiz: undefined })}
-                                className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors"
-                                title="Remover questionário"
-                              ><Trash2 size={13} /></button>
-                            </div>
-                          </div>
-                        )}
-                        <div className={`p-6 space-y-4 ${hoveredBlockId === '__quiz__' ? 'pt-10' : ''}`}>
-                          <input
-                            className="w-full p-3 bg-white border border-slate-200 rounded-md font-bold text-slate-600 outline-none focus:border-faktory-blue"
-                            placeholder="Digite a pergunta do questionário..."
-                            value={activeLesson.quiz?.question}
-                            onChange={(e) => updateLesson({ quiz: { ...activeLesson.quiz!, question: e.target.value } })}
-                          />
-                          <div className="space-y-2">
-                            {activeLesson.quiz?.options.map((option, idx) => (
-                              <div key={idx} className="flex items-center gap-2 bg-slate-50 p-3 rounded-md border border-slate-100 group/opt">
-                                <input
-                                  type="radio"
-                                  checked={activeLesson.quiz?.correctIndex === idx}
-                                  onChange={() => updateLesson({ quiz: { ...activeLesson.quiz!, correctIndex: idx } })}
-                                  title="Marcar como resposta correta"
-                                />
-                                <input
-                                  className="bg-transparent text-sm w-full outline-none"
-                                  value={option}
-                                  onChange={(e) => {
-                                    const newOptions = [...activeLesson.quiz!.options];
-                                    newOptions[idx] = e.target.value;
-                                    updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions } });
-                                  }}
-                                  placeholder={`Opção ${idx + 1}`}
-                                />
-                                {(activeLesson.quiz?.options.length ?? 0) > 2 && (
-                                  <button
-                                    onClick={() => {
-                                      const newOptions = activeLesson.quiz!.options.filter((_, i) => i !== idx);
-                                      const correctIndex = activeLesson.quiz!.correctIndex >= newOptions.length ? 0 : activeLesson.quiz!.correctIndex;
-                                      updateLesson({ quiz: { ...activeLesson.quiz!, options: newOptions, correctIndex } });
-                                    }}
-                                    className="opacity-0 group-hover/opt:opacity-100 p-1 text-slate-300 hover:text-red-500 transition-all"
-                                    title="Remover opção"
-                                  ><Trash2 size={12} /></button>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                          <p className="text-[10px] text-slate-400">Selecione o rádio ao lado da opção correta. Passe o mouse sobre uma opção para removê-la.</p>
+                        <div>
+                          <h4 className="font-bold text-slate-800">Nenhum questionário nesta etapa</h4>
+                          <p className="text-sm text-slate-500 max-w-sm mx-auto mt-1">
+                            Adicione um questionário de fixação para testar o conhecimento dos alunos após esta aula.
+                          </p>
                         </div>
+                        <button
+                          onClick={() => createAndAddQuizBlock()}
+                          className="mt-2 px-6 py-2.5 bg-faktory-blue text-white rounded-full font-bold text-sm hover:bg-faktory-blue/90 transition-all shadow-md hover:shadow-lg flex items-center gap-2"
+                        >
+                          <Plus size={18} />
+                          Criar Questionário Agora
+                        </button>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="mt-10 pt-10 border-t border-slate-100">
-                      <button
-                        onClick={() => updateLesson({ quiz: { id: genId(), question: '', options: ['', '', '', ''], correctIndex: 0 } })}
-                        className="flex items-center gap-2 text-sm text-slate-400 hover:text-faktory-blue transition-colors"
-                      >
-                        <HelpCircle size={16} />
-                        Adicionar questionário de fixação
-                      </button>
                     </div>
                   )}
                 </>
@@ -1656,9 +1561,9 @@ export default function TrilhaBuilder() {
                     return;
                   }
 
-                  if (label.includes('painéis')) {
+                  if (label.includes('paineis')) {
                     addBlock('text', { html: '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"><div style="padding: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem;">Painel 1</div><div style="padding: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem;">Painel 2</div></div>' });
-                    showToast('Grupo de painéis inserido');
+                    showToast('Grupo de paineis inserido');
                     return;
                   }
 
@@ -1722,6 +1627,8 @@ export default function TrilhaBuilder() {
         saveEditedBlock={saveEditedBlock}
         getEmbedUrl={getEmbedUrl}
         triggerImageUpload={() => imageInputRef.current?.click()}
+        showToast={showToast}
+        projectId={id}
       />
       {/* Toast */}
       {toast && (
