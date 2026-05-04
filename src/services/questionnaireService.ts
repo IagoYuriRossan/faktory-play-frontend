@@ -26,11 +26,58 @@ export async function updateTrailQuestionnaire(trailId: string, questionnaireId:
   return getTrailQuestionnaire(trailId, questionnaireId);
 }
 
+/**
+ * Lista questionários acessíveis pelo usuário.
+ * @param filters - Filtros opcionais (projectId, trailId, limit)
+ */
+export async function listQuestionnaires(filters?: {
+  projectId?: string;
+  trailId?: string;
+  limit?: number;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.projectId) params.append('projectId', filters.projectId);
+  if (filters?.trailId) params.append('trailId', filters.trailId);
+  if (filters?.limit) params.append('limit', String(filters.limit));
+  
+  const qs = params.toString() ? `?${params}` : '';
+  return api.get<Array<{
+    id: string;
+    title: string;
+    description?: string;
+    projectId?: string;
+    trailId?: string;
+    moduleId?: string | null;
+    questionCount: number;
+  }>>(`/api/questionnaires${qs}`);
+}
+
+/**
+ * Duplica um questionário existente.
+ * @param questionnaireId - ID do questionário a duplicar
+ * @param options - Opções para o novo questionário (title, description, moduleId)
+ */
+export async function duplicateQuestionnaire(
+  questionnaireId: string,
+  options?: {
+    title?: string;
+    description?: string;
+    moduleId?: string | null;
+  }
+) {
+  return api.post<{ id: string; message: string; title: string }>(
+    `/api/questionnaires/${encodeURIComponent(questionnaireId)}/duplicate`,
+    options ?? {}
+  );
+}
+
 export default { 
   createProjectQuestionnaire, 
   updateQuestionnaire, 
   deleteQuestionnaire, 
   getQuestionnaire,
   getTrailQuestionnaire,
-  updateTrailQuestionnaire
+  updateTrailQuestionnaire,
+  listQuestionnaires,
+  duplicateQuestionnaire
 };

@@ -14,7 +14,7 @@ import { cn } from '../../utils/utils';
 import { Trail, Module, Lesson } from '../../@types/index';
 import DOMPurify from 'dompurify';
 import { api } from '../../utils/api';
-import { createProjectQuestionnaire } from '../../services/questionnaireService';
+import { createProjectQuestionnaire, listQuestionnaires, duplicateQuestionnaire } from '../../services/questionnaireService';
 import { useWysiwygEditor } from './TrilhaBuilder/hooks/useWysiwygEditor';
 import { useTrailData } from './TrilhaBuilder/hooks/useTrailData';
 import { useModuleTree } from './TrilhaBuilder/hooks/useModuleTree';
@@ -52,6 +52,11 @@ export default function TrilhaBuilder() {
   const [addingTaskType, setAddingTaskType] = useState<'questionnaire' | 'signature' | 'image_upload' | null>(null);
   const [taskForm, setTaskForm] = useState<{ title: string; description: string; config: Record<string, any>; isRequired: boolean }>({ title: '', description: '', config: {}, isRequired: true });
   const [savingTask, setSavingTask] = useState(false);
+  const [availableQuestionnaires, setAvailableQuestionnaires] = useState<Array<{ id: string; title: string; questionCount: number }>>([]);
+  const [loadingQuestionnaires, setLoadingQuestionnaires] = useState(false);
+  const [showQuestionnaireModal, setShowQuestionnaireModal] = useState(false);
+  const [newQuestionnaireTitle, setNewQuestionnaireTitle] = useState('');
+  const [creatingQuestionnaire, setCreatingQuestionnaire] = useState(false);
 
   // -- Extracted hooks --
   const trail = useTrailData();
@@ -142,6 +147,44 @@ export default function TrilhaBuilder() {
     showToast('Vídeo movido para o conteúdo como bloco');
   };
 
+  // Criar questionário inline
+  const handleCreateQuestionnaire = async () => {
+    if (!newQuestionnaireTitle.trim() || !trailId) return;
+    
+    setCreatingQuestionnaire(true);
+    try {
+      const newQuestionnaire = await createProjectQuestionnaire(trailId, {
+        title: newQuestionnaireTitle.trim(),
+        description: '',
+        questions: [],
+      });
+
+      showToast('Questionário criado com sucesso!');
+      
+      // Recarrega a lista de questionários
+      const questionnaires = await listQuestionnaires();
+      setAvailableQuestionnaires(
+        questionnaires.map(q => ({
+          id: q.id,
+          title: q.title,
+          questionCount: q.questionCount,
+        }))
+      );
+
+      // Seleciona automaticamente o questionário recém-criado
+      setTaskForm(f => ({ ...f, config: { ...f.config, questionnaireId: newQuestionnaire.id } }));
+
+      // Fecha o modal e limpa o campo
+      setShowQuestionnaireModal(false);
+      setNewQuestionnaireTitle('');
+    } catch (err: any) {
+      console.error('Erro ao criar questionário:', err);
+      showToast('Erro ao criar questionário: ' + (err?.serverMessage ?? 'tente novamente'));
+    } finally {
+      setCreatingQuestionnaire(false);
+    }
+  };
+
   // Create questionnaire on server and insert a quiz block linked to it
   const createAndAddQuizBlock = async () => {
     const al = getActiveLesson();
@@ -205,6 +248,20 @@ export default function TrilhaBuilder() {
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDocClick); document.removeEventListener('keydown', onKey); };
   }, [showActionsMenu]);
+
+  // -- Carregar questionários disponíveis --
+  useEffect(() => {
+    if (!trailId || addingTaskType !== 'questionnaire') return;
+    
+    setLoadingQuestionnaires(true);
+    api.get<Array<{ id: string; title: string; questionCount: number }>>(`/api/questionnaires?trailId=${encodeURIComponent(trailId)}&limit=100`)
+      .then(data => setAvailableQuestionnaires(data))
+      .catch(err => {
+        console.error('Erro ao carregar questionários:', err);
+        showToast('Erro ao carregar questionários');
+      })
+      .finally(() => setLoadingQuestionnaires(false));
+  }, [trailId, addingTaskType, showToast]);
 
   // -- Drag and drop refs --
   const dragBlockIdRef = useRef<string | null>(null);
@@ -577,6 +634,27 @@ export default function TrilhaBuilder() {
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showBlockEditor, editingBlockId]);
+
+  // Carregar questionários quando o tipo de tarefa for questionnaire
+  useEffect(() => {
+    if (addingTaskType !== 'questionnaire') return;
+    setLoadingQuestionnaires(true);
+    listQuestionnaires()
+      .then(questionnaires => {
+        setAvailableQuestionnaires(
+          questionnaires.map(q => ({
+            id: q.id,
+            title: q.title,
+            questionCount: q.questionCount,
+          }))
+        );
+      })
+      .catch(err => {
+        console.error('Erro ao carregar questionários:', err);
+        showToast('Erro ao carregar questionários');
+      })
+      .finally(() => setLoadingQuestionnaires(false));
+  }, [addingTaskType]);
 
 
 
@@ -1621,16 +1699,72 @@ export default function TrilhaBuilder() {
                   </div>
 
                   {addingTaskType === 'questionnaire' && (
-                    <div>
-                      <label className="text-[10px] font-semibold text-slate-500 block mb-1">ID do Questionário *</label>
-                      <input
-                        type="text"
-                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none"
-                        placeholder="questionnaireId"
-                        value={taskForm.config.questionnaireId ?? ''}
-                        onChange={e => setTaskForm(f => ({ ...f, config: { ...f.config, questionnaireId: e.target.value } }))}
-                      />
-                    </div>
+                    <>
+                      <div>
+                        <label className="text-[10px] font-semibold text-slate-500 block mb-1">
+                          Questionário *
+                        </label>
+                        {loadingQuestionnaires ? (
+                          <div className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs text-slate-400 flex items-center gap-2">
+                            <Loader2 size={12} className="animate-spin" />
+                            Carregando questionários...
+                          </div>
+                        ) : availableQuestionnaires.length > 0 ? (
+                          <>
+                            <select
+                              className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none"
+                              value={taskForm.config.questionnaireId ?? ''}
+                              onChange={e => setTaskForm(f => ({ ...f, config: { ...f.config, questionnaireId: e.target.value } }))}
+                            >
+                              <option value="">Selecione um questionário</option>
+                              {availableQuestionnaires.map(q => (
+                                <option key={q.id} value={q.id}>
+                                  {q.title} ({q.questionCount} {q.questionCount === 1 ? 'questão' : 'questões'})
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => setShowQuestionnaireModal(true)}
+                              className="mt-2 w-full flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-1.5 text-xs text-slate-600 hover:border-faktory-blue hover:text-faktory-blue transition-colors"
+                            >
+                              <Plus size={12} />
+                              Criar Novo Questionário
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-[10px] text-slate-400 p-2 border border-dashed border-slate-200 rounded-lg mb-2">
+                              Nenhum questionário encontrado.
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setShowQuestionnaireModal(true)}
+                              className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-1.5 text-xs text-slate-600 hover:border-faktory-blue hover:text-faktory-blue transition-colors"
+                            >
+                              <Plus size={12} />
+                              Criar Novo Questionário
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      
+                      {/* Campo manual como fallback */}
+                      {availableQuestionnaires.length === 0 && (
+                        <div>
+                          <label className="text-[10px] font-semibold text-slate-500 block mb-1">
+                            Ou insira o ID manualmente
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none"
+                            placeholder="questionnaireId"
+                            value={taskForm.config.questionnaireId ?? ''}
+                            onChange={e => setTaskForm(f => ({ ...f, config: { ...f.config, questionnaireId: e.target.value } }))}
+                          />
+                        </div>
+                      )}
+                    </>
                   )}
 
                   {addingTaskType === 'signature' && (
@@ -1791,6 +1925,71 @@ export default function TrilhaBuilder() {
         showToast={showToast}
         projectId={id}
       />
+
+      {/* Modal de criação de questionário */}
+      <AnimatePresence>
+        {showQuestionnaireModal && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[120] p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.98 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.98 }}
+              className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6"
+            >
+              <h3 className="text-lg font-bold mb-4">Criar Novo Questionário</h3>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">
+                    Título do Questionário *
+                  </label>
+                  <input
+                    type="text"
+                    autoFocus
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-faktory-blue outline-none"
+                    placeholder="Ex: Avaliação do Módulo 1"
+                    value={newQuestionnaireTitle}
+                    onChange={e => setNewQuestionnaireTitle(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && newQuestionnaireTitle.trim() && !creatingQuestionnaire) {
+                        e.preventDefault();
+                        handleCreateQuestionnaire();
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <button
+                    onClick={() => {
+                      setShowQuestionnaireModal(false);
+                      setNewQuestionnaireTitle('');
+                    }}
+                    disabled={creatingQuestionnaire}
+                    className="px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleCreateQuestionnaire}
+                    disabled={!newQuestionnaireTitle.trim() || creatingQuestionnaire}
+                    className={cn(
+                      'px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2',
+                      newQuestionnaireTitle.trim() && !creatingQuestionnaire
+                        ? 'bg-faktory-blue text-white hover:bg-faktory-blue/90'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    )}
+                  >
+                    {creatingQuestionnaire && <Loader2 size={14} className="animate-spin" />}
+                    {creatingQuestionnaire ? 'Criando...' : 'Criar'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Toast */}
       {toast && (
         <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-4 py-2 rounded shadow-lg z-50">{toast}</div>
