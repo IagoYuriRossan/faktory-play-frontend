@@ -5,7 +5,8 @@ import {
   Layout, Image as ImageIcon, Type, Code, Layers,
   Eye, Search, Bell, User as UserIcon, Minus, Maximize2,
   RefreshCw, MousePointer2, Settings,
-  GripVertical, Copy, Pencil, Undo2, Redo2
+  GripVertical, Copy, Pencil, Undo2, Redo2,
+  PenLine, Upload, ClipboardList,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { auth } from '../../utils/firebase';
@@ -23,6 +24,7 @@ import { PreviewModal } from './TrilhaBuilder/components/PreviewModal';
 import { VideoSettingsModal } from './TrilhaBuilder/components/VideoSettingsModal';
 import { BlockEditorModal } from './TrilhaBuilder/components/BlockEditorModal';
 import { trilhaBuilderApi } from './TrilhaBuilder/services/trilhaBuilderApi';
+import taskService from '../../services/taskService';
 import { ContentArea } from './TrilhaBuilder/components/ContentArea';
 import { createLogoContent, genBlock, genId, getEmbedUrl, parseBlocks } from './TrilhaBuilder/utils/contentBlocks';
 
@@ -45,6 +47,11 @@ export default function TrilhaBuilder() {
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
   const [pendingFiles, setPendingFiles] = useState<Record<string, { file: File; moduleId: string; etapaId: string }>>({});
   const isMainImageUploadRef = useRef(false);
+  // Aba ativa do right sidebar: 'components' | 'tasks'
+  const [rightTab, setRightTab] = useState<'components' | 'tasks'>('components');
+  const [addingTaskType, setAddingTaskType] = useState<'questionnaire' | 'signature' | 'image_upload' | null>(null);
+  const [taskForm, setTaskForm] = useState<{ title: string; description: string; config: Record<string, any>; isRequired: boolean }>({ title: '', description: '', config: {}, isRequired: true });
+  const [savingTask, setSavingTask] = useState(false);
 
   // -- Extracted hooks --
   const trail = useTrailData();
@@ -1493,99 +1500,250 @@ export default function TrilhaBuilder() {
           </div>
         </main>
 
-        {/* Right Sidebar - Components */}
+        {/* Right Sidebar - Components / Tasks */}
         <aside className="w-64 bg-white border-l border-slate-200 flex flex-col shrink-0">
           <div className="flex border-b border-slate-100">
-            <button className="flex-1 py-3 text-[10px] font-bold text-faktory-blue border-b-2 border-faktory-blue flex items-center justify-center gap-2">
+            <button
+              onClick={() => setRightTab('components')}
+              className={cn('flex-1 py-3 text-[10px] font-bold flex items-center justify-center gap-2 transition-colors', rightTab === 'components' ? 'text-faktory-blue border-b-2 border-faktory-blue' : 'text-slate-400 hover:text-slate-600')}
+            >
               <Layers size={14} />
               Componentes
             </button>
-            <button className="flex-1 py-3 text-[10px] font-bold text-slate-400 hover:text-slate-600 flex items-center justify-center gap-2">
-              <Layout size={14} />
-              Layout
+            <button
+              onClick={() => setRightTab('tasks')}
+              className={cn('flex-1 py-3 text-[10px] font-bold flex items-center justify-center gap-2 transition-colors', rightTab === 'tasks' ? 'text-faktory-blue border-b-2 border-faktory-blue' : 'text-slate-400 hover:text-slate-600')}
+            >
+              <ClipboardList size={14} />
+              Tarefas
             </button>
           </div>
 
-          <div className="p-4 grid grid-cols-2 gap-2">
-            {[
-              { icon: Type, label: 'Título de seção' },
-              { icon: FileText, label: 'Texto ou HTML' },
-              { icon: ImageIcon, label: 'Imagem' },
-              { icon: Video, label: 'Vídeo' },
-              { icon: HelpCircle, label: 'Texto em destaque' },
-              { icon: Layers, label: 'Grupo de painéis' },
-              { icon: Code, label: 'Código embed' },
-              { icon: HelpCircle, label: 'Questionário' },
-            ].map((comp, idx) => (
-              <button
-                key={idx}
-                onClick={() => {
-                  // insert or open component depending on type
-                  if (!activeLesson) {
-                    showToast('Selecione uma aula antes de inserir componentes');
-                    return;
-                  }
-                  const label = comp.label;
-                  if (label.includes('Questionário')) {
-                    createAndAddQuizBlock();
-                    return;
-                  }
-                  if (label.includes('Vídeo')) {
-                    const newId = addBlock('video', { url: '' });
-                    if (newId) editBlockById(newId);
-                    showToast('Vídeo adicionado! Insira a URL no painel.');
-                    return;
-                  }
+          {rightTab === 'components' && (
+            <>
+              <div className="p-4 grid grid-cols-2 gap-2">
+                {[
+                  { icon: Type, label: 'Título de seção' },
+                  { icon: FileText, label: 'Texto ou HTML' },
+                  { icon: ImageIcon, label: 'Imagem' },
+                  { icon: Video, label: 'Vídeo' },
+                  { icon: HelpCircle, label: 'Texto em destaque' },
+                  { icon: Layers, label: 'Grupo de painéis' },
+                  { icon: Code, label: 'Código embed' },
+                  { icon: HelpCircle, label: 'Questionário' },
+                ].map((comp, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      if (!activeLesson) { showToast('Selecione uma aula antes de inserir componentes'); return; }
+                      const label = comp.label;
+                      if (label.includes('Questionário')) { createAndAddQuizBlock(); return; }
+                      if (label.includes('Vídeo')) { const newId = addBlock('video', { url: '' }); if (newId) editBlockById(newId); showToast('Vídeo adicionado! Insira a URL no painel.'); return; }
+                      if (label.includes('Imagem')) { imageInputRef.current?.click(); return; }
+                      if (label.includes('Título')) { const titleHtml = getActiveLessonTitleHtml() || '<h2>Título de seção</h2>'; addBlock('text', { html: titleHtml }); showToast('Título inserido'); return; }
+                      if (label.includes('Texto') || label.includes('HTML')) { addBlock('text', { html: '<p>Novo parágrafo...</p>' }); showToast('Texto inserido'); return; }
+                      if (label.includes('destaque')) { addBlock('text', { html: '<div style="background: #f0f9ff; border-left: 4px solid #0ea5e9; padding: 1rem; margin-bottom: 1rem;"><strong>Texto em destaque</strong></div>' }); showToast('Texto em destaque inserido'); return; }
+                      if (label.includes('paineis')) { addBlock('text', { html: '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"><div style="padding: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem;">Painel 1</div><div style="padding: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem;">Painel 2</div></div>' }); showToast('Grupo de paineis inserido'); return; }
+                      if (label.includes('embed')) { addBlock('iframe', { url: '' }); showToast('Embed inserido'); return; }
+                    }}
+                    className="flex flex-col items-center justify-center p-3 border border-slate-100 rounded-md hover:border-faktory-blue hover:text-faktory-blue transition-all group"
+                  >
+                    <comp.icon size={20} className="text-slate-400 group-hover:text-faktory-blue mb-2" />
+                    <span className="text-[9px] font-bold text-slate-500 group-hover:text-faktory-blue text-center leading-tight">{comp.label}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-auto p-4 border-t border-slate-100 bg-slate-50/50">
+                <button className="w-full py-2 bg-slate-800 text-white rounded font-bold text-[10px] uppercase tracking-wider hover:bg-slate-900 transition-all">
+                  Limpar previsões
+                </button>
+              </div>
+            </>
+          )}
 
-                  if (label.includes('Imagem')) {
-                    imageInputRef.current?.click();
-                    return;
-                  }
+          {rightTab === 'tasks' && (
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {!activeLesson ? (
+                <p className="text-[10px] text-slate-400 text-center py-6">Selecione uma etapa para gerenciar tarefas</p>
+              ) : !addingTaskType ? (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400 mb-2">Adicionar tarefa</p>
+                  {([
+                    { type: 'questionnaire' as const, icon: ClipboardList, label: 'Questionário', desc: 'Vincular questionário existente' },
+                    { type: 'signature' as const, icon: PenLine, label: 'Assinatura Digital', desc: 'O aluno confirma que entendeu' },
+                    { type: 'image_upload' as const, icon: Upload, label: 'Envio de Arquivo', desc: 'Aluno envia imagem ou PDF' },
+                  ]).map(item => (
+                    <button
+                      key={item.type}
+                      onClick={() => { setAddingTaskType(item.type); setTaskForm({ title: '', description: '', config: {}, isRequired: true }); }}
+                      className="w-full flex items-center gap-3 rounded-xl border border-slate-200 p-3 text-left hover:border-faktory-blue hover:bg-blue-50/40 transition-all group"
+                    >
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-100 group-hover:bg-blue-100">
+                        <item.icon size={15} className="text-slate-500 group-hover:text-faktory-blue" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-slate-700">{item.label}</p>
+                        <p className="text-[10px] text-slate-400">{item.desc}</p>
+                      </div>
+                    </button>
+                  ))}
+                </>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setAddingTaskType(null)} className="text-slate-400 hover:text-slate-700">
+                      <ArrowLeft size={14} />
+                    </button>
+                    <p className="text-xs font-semibold text-slate-700">
+                      {addingTaskType === 'questionnaire' ? 'Questionário' : addingTaskType === 'signature' ? 'Assinatura Digital' : 'Envio de Arquivo'}
+                    </p>
+                  </div>
 
-                  if (label.includes('Título')) {
-                    const titleHtml = getActiveLessonTitleHtml() || '<h2>Título de seção</h2>';
-                    addBlock('text', { html: titleHtml });
-                    showToast('Título inserido');
-                    return;
-                  }
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-500 block mb-1">Título da tarefa *</label>
+                    <input
+                      type="text"
+                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none"
+                      placeholder="Ex: Confirme que assistiu o módulo"
+                      value={taskForm.title}
+                      onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))}
+                    />
+                  </div>
 
-                  if (label.includes('Texto') || label.includes('HTML')) {
-                    addBlock('text', { html: '<p>Novo parágrafo...</p>' });
-                    showToast('Texto inserido');
-                    return;
-                  }
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-500 block mb-1">Descrição</label>
+                    <textarea
+                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none resize-none min-h-[56px]"
+                      placeholder="Instrução exibida ao aluno..."
+                      value={taskForm.description}
+                      onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))}
+                    />
+                  </div>
 
-                  if (label.includes('destaque')) {
-                    addBlock('text', { html: '<div style="background: #f0f9ff; border-left: 4px solid #0ea5e9; padding: 1rem; margin-bottom: 1rem;"><strong>Texto em destaque</strong></div>' });
-                    showToast('Texto em destaque inserido');
-                    return;
-                  }
+                  {addingTaskType === 'questionnaire' && (
+                    <div>
+                      <label className="text-[10px] font-semibold text-slate-500 block mb-1">ID do Questionário *</label>
+                      <input
+                        type="text"
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none"
+                        placeholder="questionnaireId"
+                        value={taskForm.config.questionnaireId ?? ''}
+                        onChange={e => setTaskForm(f => ({ ...f, config: { ...f.config, questionnaireId: e.target.value } }))}
+                      />
+                    </div>
+                  )}
 
-                  if (label.includes('paineis')) {
-                    addBlock('text', { html: '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"><div style="padding: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem;">Painel 1</div><div style="padding: 1rem; border: 1px solid #e2e8f0; border-radius: 0.5rem;">Painel 2</div></div>' });
-                    showToast('Grupo de paineis inserido');
-                    return;
-                  }
+                  {addingTaskType === 'signature' && (
+                    <>
+                      <div>
+                        <label className="text-[10px] font-semibold text-slate-500 block mb-1">Texto da declaração *</label>
+                        <textarea
+                          className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none resize-none min-h-[72px]"
+                          placeholder="Declaro que li e compreendi o conteúdo..."
+                          value={taskForm.config.signatureText ?? ''}
+                          onChange={e => setTaskForm(f => ({ ...f, config: { ...f.config, signatureText: e.target.value } }))}
+                        />
+                      </div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="accent-faktory-blue"
+                          checked={taskForm.config.requireTypedConfirmation ?? false}
+                          onChange={e => setTaskForm(f => ({ ...f, config: { ...f.config, requireTypedConfirmation: e.target.checked } }))}
+                        />
+                        <span className="text-[10px] text-slate-600">Exigir confirmação digitada</span>
+                      </label>
+                    </>
+                  )}
 
-                  if (label.includes('embed')) {
-                    addBlock('iframe', { url: '' });
-                    showToast('Embed inserido');
-                    return;
-                  }
-                }}
-                className="flex flex-col items-center justify-center p-3 border border-slate-100 rounded-md hover:border-faktory-blue hover:text-faktory-blue transition-all group"
-              >
-                <comp.icon size={20} className="text-slate-400 group-hover:text-faktory-blue mb-2" />
-                <span className="text-[9px] font-bold text-slate-500 group-hover:text-faktory-blue text-center leading-tight">{comp.label}</span>
-              </button>
-            ))}
-          </div>
+                  {addingTaskType === 'image_upload' && (
+                    <>
+                      <div>
+                        <label className="text-[10px] font-semibold text-slate-500 block mb-1">Instrução de upload</label>
+                        <input
+                          type="text"
+                          className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none"
+                          placeholder="Ex: Envie uma foto do seu certificado"
+                          value={taskForm.config.uploadPrompt ?? ''}
+                          onChange={e => setTaskForm(f => ({ ...f, config: { ...f.config, uploadPrompt: e.target.value } }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-semibold text-slate-500 block mb-1">Tamanho máximo (MB)</label>
+                        <input
+                          type="number"
+                          className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-faktory-blue outline-none"
+                          placeholder="10"
+                          min={1} max={50}
+                          value={taskForm.config.maxSizeMB ?? ''}
+                          onChange={e => setTaskForm(f => ({ ...f, config: { ...f.config, maxSizeMB: Number(e.target.value) } }))}
+                        />
+                      </div>
+                    </>
+                  )}
 
-          <div className="mt-auto p-4 border-t border-slate-100 bg-slate-50/50">
-            <button className="w-full py-2 bg-slate-800 text-white rounded font-bold text-[10px] uppercase tracking-wider hover:bg-slate-900 transition-all">
-              Limpar previsões
-            </button>
-          </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-faktory-blue"
+                      checked={taskForm.isRequired}
+                      onChange={e => setTaskForm(f => ({ ...f, isRequired: e.target.checked }))}
+                    />
+                    <span className="text-[10px] text-slate-600">Tarefa obrigatória</span>
+                  </label>
+
+                  <button
+                    type="button"
+                    disabled={!taskForm.title.trim() || savingTask}
+                    onClick={async () => {
+                      if (!activeLesson || !trailId || !activeModuleId) return;
+                      setSavingTask(true);
+                      try {
+                        // Determina se activeLesson é subetapa
+                        const parentEtapa = trailData?.modules
+                          .flatMap(m => m.etapas ?? [])
+                          .find(e => e.subetapas?.some((s: any) => s.id === activeLesson.id));
+                        const isSubetapa = !!parentEtapa;
+                        const etapaId = isSubetapa ? parentEtapa!.id : activeLesson.id;
+                        const subetapaId = isSubetapa ? activeLesson.id : null;
+
+                        await taskService.createTask({
+                          projectId: trailId,
+                          moduleId: activeModuleId,
+                          etapaId,
+                          subetapaId,
+                          task: {
+                            type: addingTaskType!,
+                            title: taskForm.title.trim(),
+                            description: taskForm.description.trim() || undefined,
+                            config: taskForm.config,
+                            order: 0,
+                            isRequired: taskForm.isRequired,
+                          },
+                        });
+                        showToast('Tarefa criada com sucesso!');
+                        setAddingTaskType(null);
+                        setTaskForm({ title: '', description: '', config: {}, isRequired: true });
+                      } catch (e: any) {
+                        showToast('Erro ao criar tarefa: ' + (e?.serverMessage ?? 'tente novamente'));
+                      } finally {
+                        setSavingTask(false);
+                      }
+                    }}
+                    className={cn(
+                      'w-full flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-all',
+                      taskForm.title.trim() && !savingTask
+                        ? 'bg-faktory-blue text-white hover:bg-faktory-blue/90'
+                        : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                    )}
+                  >
+                    {savingTask ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
+                    {savingTask ? 'Salvando...' : 'Criar Tarefa'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </aside>
       </div>
 

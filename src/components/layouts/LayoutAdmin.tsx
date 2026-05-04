@@ -87,6 +87,7 @@ export default function LayoutAdmin() {
         { label: 'Meus Produtos', icon: BookOpen, path: '/admin/trilhas', color: 'text-orange-500' },
         { label: 'Posts', icon: FileText, path: '/admin/posts', color: 'text-green-500' },
         { label: 'Questionários', icon: FileText, path: '/admin/questionarios', color: 'text-blue-400' },
+        { label: 'Revisão de Tarefas', icon: FileText, path: '/admin/tarefas', color: 'text-amber-500' },
         { label: 'Pág. customizáveis', icon: Settings, path: '/admin/paginas', color: 'text-slate-400' },
       ]
     }
@@ -99,6 +100,7 @@ export default function LayoutAdmin() {
     if (path.includes('/admin/projetos')) return 'Projetos';
     if (path.includes('/admin/trilhas')) return 'Meus Produtos';
     if (path.includes('/admin/relatorios')) return 'Relatórios';
+    if (path.includes('/admin/tarefas')) return 'Revisão de Tarefas';
     if (path.includes('/admin/configuracoes')) return 'Configurações';
     return 'Dashboard';
   };

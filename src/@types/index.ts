@@ -50,6 +50,8 @@ export interface Subetapa {
     controls?: boolean;
     subtitlesUrl?: string;
   };
+  /** IDs das tarefas vinculadas a esta subetapa */
+  tasks?: string[];
 }
 
 export interface Etapa {
@@ -65,6 +67,8 @@ export interface Etapa {
     controls?: boolean;
     subtitlesUrl?: string;
   };
+  /** IDs das tarefas vinculadas a esta etapa */
+  tasks?: string[];
 }
 
 export interface Module {

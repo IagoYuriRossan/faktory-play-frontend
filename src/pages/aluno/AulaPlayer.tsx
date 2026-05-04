@@ -4,6 +4,7 @@ import { api } from '../../utils/api';
 import { useAuthStore } from '../../hooks/store/useAuthStore';
 import { useQuestionnaire, startAttempt, submitAttempt } from '../../hooks/useQuestionnaire';
 import { Trail, Lesson, Enrollment } from '../../@types';
+import TaskList from '../../components/tasks/TaskList';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -1253,9 +1254,54 @@ export default function AlunoAulaPlayer() {
           <div className="p-4 border-b border-gray-50 flex items-center justify-between">
             <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tarefas</h3>
           </div>
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-            <ClipboardList size={32} className="text-slate-200 mb-4" />
-            <p className="text-[10px] font-bold text-slate-400 uppercase">Sem tarefas</p>
+          <div className="flex-1 overflow-y-auto p-3">
+            {user && currentModule && currentLesson && trail ? (
+              (() => {
+                // Determina se currentLesson é uma subetapa
+                const parentEtapa = trail.modules
+                  .flatMap(m => m.etapas ?? [])
+                  .find(e => e.subetapas?.some(s => s.id === currentLesson.id));
+                const isSubetapa = !!parentEtapa;
+                const etapaId = isSubetapa ? parentEtapa!.id : currentLesson.id;
+                const subetapaId = isSubetapa ? currentLesson.id : null;
+                const taskIds = isSubetapa
+                  ? (parentEtapa!.subetapas?.find(s => s.id === currentLesson.id)?.tasks ?? [])
+                  : (currentLesson.tasks ?? []);
+
+                if (!taskIds.length) {
+                  return (
+                    <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+                      <ClipboardList size={28} className="text-slate-200 mb-3" />
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">Sem tarefas</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <TaskList
+                    taskIds={taskIds}
+                    userId={user.id}
+                    projectId={trail.id}
+                    moduleId={currentModule.id}
+                    etapaId={etapaId}
+                    subetapaId={subetapaId}
+                    trailId={trail.id}
+                    enrollmentId={enrollment?.id}
+                    onTaskCompleted={(taskId, completion) => {
+                      setEnrollment(prev => prev ? ({
+                        ...prev,
+                        completedTasks: [...((prev as any).completedTasks ?? []), taskId],
+                      } as any) : prev);
+                    }}
+                  />
+                );
+              })()
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+                <ClipboardList size={28} className="text-slate-200 mb-3" />
+                <p className="text-[10px] font-bold text-slate-400 uppercase">Sem tarefas</p>
+              </div>
+            )}
           </div>
         </aside>
       </div>

@@ -21,6 +21,7 @@ import AdminConfiguracoes from '../pages/admin/Configuracoes';
 import AdminPosts from '../pages/admin/Posts';
 import PlaceholderPage from '../pages/admin/Placeholder';
 import Cronograma from '../pages/admin/Cronograma';
+import AdminTasksReview from '../pages/admin/TasksReview';
 
 // Empresa (company_admin) Pages
 import EmpresaDashboard from '../pages/empresa/Dashboard';
@@ -96,6 +97,7 @@ export default function AppRoutes() {
         <Route path="chat" element={<PlaceholderPage title="Chat de Atendimento" />} />
         <Route path="alocacao" element={<PlaceholderPage title="Alocação de Recursos" />} />
         <Route path="trilhas" element={<AdminTrilhas />} />
+        <Route path="tarefas" element={<AdminTasksReview />} />
         <Route path="questionarios" element={<PlaceholderPage title="Questionários" />} />
         <Route path="projects/:projectId/cronograma" element={<Cronograma />} />
         <Route path="paginas" element={<PlaceholderPage title="Páginas Customizáveis" />} />
