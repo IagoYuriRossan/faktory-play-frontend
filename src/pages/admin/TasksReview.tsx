@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../../utils/api';
+import { useAuthStore } from '../../hooks/store/useAuthStore';
 import TaskReviewPanel from '../../components/tasks/TaskReviewPanel';
 import { ClipboardCheck, Loader2 } from 'lucide-react';
 
@@ -9,9 +11,18 @@ interface Project {
 }
 
 export default function TasksReview() {
+  const navigate = useNavigate();
+  const { user } = useAuthStore();
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>('');
   const [loading, setLoading] = useState(false);
+
+  // Proteção: apenas admins podem acessar
+  useEffect(() => {
+    if (!user || (user.role !== 'company_admin' && user.role !== 'superadmin')) {
+      navigate('/admin/dashboard');
+    }
+  }, [user, navigate]);
 
   useEffect(() => {
     setLoading(true);

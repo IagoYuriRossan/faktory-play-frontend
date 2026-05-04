@@ -1694,7 +1694,7 @@ export default function TrilhaBuilder() {
 
                   <button
                     type="button"
-                    disabled={!taskForm.title.trim() || savingTask}
+                    disabled={!taskForm.title.trim() || savingTask || (addingTaskType === 'questionnaire' && !taskForm.config.questionnaireId?.trim()) || (addingTaskType === 'signature' && !taskForm.config.signatureText?.trim())}
                     onClick={async () => {
                       if (!activeLesson || !trailId || !activeModuleId) return;
                       setSavingTask(true);
@@ -1707,7 +1707,7 @@ export default function TrilhaBuilder() {
                         const etapaId = isSubetapa ? parentEtapa!.id : activeLesson.id;
                         const subetapaId = isSubetapa ? activeLesson.id : null;
 
-                        await taskService.createTask({
+                        const newTask = await taskService.createTask({
                           projectId: trailId,
                           moduleId: activeModuleId,
                           etapaId,
@@ -1724,6 +1724,9 @@ export default function TrilhaBuilder() {
                         showToast('Tarefa criada com sucesso!');
                         setAddingTaskType(null);
                         setTaskForm({ title: '', description: '', config: {}, isRequired: true });
+                        
+                        // Recarrega a trilha para atualizar o estado local com a nova tarefa
+                        await handleRefreshFromServer();
                       } catch (e: any) {
                         showToast('Erro ao criar tarefa: ' + (e?.serverMessage ?? 'tente novamente'));
                       } finally {
