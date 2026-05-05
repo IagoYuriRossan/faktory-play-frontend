@@ -27,7 +27,7 @@ export default function AdminRelatorios() {
     async function fetchReports() {
       try {
         const [enrollments, companies, trails] = await Promise.all([
-          api.get<any[]>('/api/reports'),
+          api.get<{ enrollments: any[] }>('/api/admin/enrollments').then(r => r.enrollments),
           api.get<Company[]>('/api/companies'),
           api.get<Trail[]>('/api/trails'),
         ]);
