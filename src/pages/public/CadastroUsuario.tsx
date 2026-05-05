@@ -74,6 +74,13 @@ export default function CadastroUsuario() {
       const result = await signInWithPopup(auth, provider);
       const idToken = await result.user.getIdToken();
 
+      // Valida que o e-mail da conta Google bate com o convite
+      if (invite?.invitedEmail && result.user.email?.toLowerCase() !== invite.invitedEmail.toLowerCase()) {
+        setError(`Este convite é para ${invite.invitedEmail}. Entre com o e-mail correto.`);
+        await result.user.delete().catch(() => {});
+        return;
+      }
+
       // Aceitar o convite vinculando a conta Google à empresa
       const acceptRes = await fetch(`${BASE_URL}/api/invites/${token}/accept`, {
         method: 'POST',
@@ -113,6 +120,12 @@ export default function CadastroUsuario() {
 
     if (!isStrongPassword(password)) {
       setError('Senha fraca. Use no mínimo 8 caracteres com maiúscula, minúscula, número e símbolo.');
+      return;
+    }
+
+    // Valida que o e-mail digitado bate com o convite
+    if (invite?.invitedEmail && email.toLowerCase().trim() !== invite.invitedEmail.toLowerCase().trim()) {
+      setError(`Este convite é para ${invite.invitedEmail}. Use o e-mail correto.`);
       return;
     }
 
