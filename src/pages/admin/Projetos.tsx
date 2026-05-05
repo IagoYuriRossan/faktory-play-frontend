@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ChevronDown, ChevronUp, Loader2, BookOpen,
-  User, Users, X, Clock, BarChart2,
+  Loader2, BookOpen, User, Users, X, Clock,
+  BarChart2, Search, SlidersHorizontal, Building2, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { api } from '../../utils/api';
 import {
@@ -43,12 +43,194 @@ function fmtDate(iso: string | null | undefined) {
 }
 
 // ── config ────────────────────────────────────────────────────────────────
-
-/** Quantos alunos carregar por página. Mantenha entre 25–50 para equilibrar
- *  custo de leitura no Firestore e fluidez de render. */
 const USERS_BATCH = 25;
 
-// ── component ──────────────────────────────────────────────────────────────
+const STATUS_BAR_COLOR: Record<UserTrailStatus, string> = {
+  not_started: 'bg-slate-300',
+  in_progress:  'bg-blue-500',
+  completed:    'bg-green-500',
+  overdue:      'bg-red-500',
+};
+
+// ── Tipo interno que associa trilha à sua empresa ──────────────────────────
+interface TrailCard extends TrailWithUsers {
+  companyId: string;
+  companyName: string;
+}
+
+// ── TrailCard component ────────────────────────────────────────────────────
+function TrailCardView({
+  trail,
+  companyId,
+  trailCursors,
+  trailUsersLoading,
+  onLoadMore,
+  onOpenUser,
+}: {
+  trail: TrailCard;
+  companyId: string;
+  trailCursors: Record<string, Record<string, string | null>>;
+  trailUsersLoading: Record<string, Record<string, boolean>>;
+  onLoadMore: (companyId: string, trailId: string) => void;
+  onOpenUser: (user: TrailUser, trailTitle: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const progress = trail.averageProgress ?? 0;
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<UserTrailStatus, number> = { not_started: 0, in_progress: 0, completed: 0, overdue: 0 };
+    trail.users.forEach(u => { counts[u.userTrail.status] = (counts[u.userTrail.status] ?? 0) + 1; });
+    return counts;
+  }, [trail.users]);
+
+  const progressColor =
+    progress >= 75 ? 'bg-green-500' :
+    progress >= 40 ? 'bg-blue-500' :
+    progress > 0   ? 'bg-orange-400' :
+                     'bg-slate-300';
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+      <div className="p-5 flex-1">
+        {/* Company badge */}
+        <div className="flex items-center gap-1.5 mb-3">
+          <Building2 size={11} className="text-slate-400" />
+          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide truncate">
+            {trail.companyName}
+          </span>
+        </div>
+
+        {/* Title */}
+        <div className="flex items-start gap-2 mb-4">
+          <div className="w-8 h-8 bg-orange-50 rounded-lg flex items-center justify-center shrink-0 mt-0.5">
+            <BookOpen size={15} className="text-orange-400" />
+          </div>
+          <h3 className="text-sm font-bold text-slate-800 leading-snug">{trail.title}</h3>
+        </div>
+
+        {/* Progress bar */}
+        <div className="mb-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] text-slate-400 font-medium">Progresso médio</span>
+            <span className="text-[11px] font-bold text-slate-600">{progress}%</span>
+          </div>
+          <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className={cn('h-full rounded-full transition-all duration-500', progressColor)}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="flex items-center gap-3 text-[11px] text-slate-500 mb-4">
+          <span className="flex items-center gap-1"><Users size={11} />{trail.usersCount ?? trail.users.length} aluno(s)</span>
+          <span className="text-slate-200">|</span>
+          <span className="flex items-center gap-1"><BarChart2 size={11} />{trail.modulesCount} módulo(s)</span>
+          <span className="text-slate-200">|</span>
+          <span className="flex items-center gap-1"><Clock size={11} />{fmtDuration(trail.estimatedDurationMinutes)}</span>
+        </div>
+
+        {/* Status breakdown */}
+        <div className="grid grid-cols-2 gap-1.5">
+          {(Object.keys(STATUS_LABEL) as UserTrailStatus[]).map(s => (
+            <div key={s} className="flex items-center gap-1.5">
+              <div className={cn('w-2 h-2 rounded-full shrink-0', STATUS_BAR_COLOR[s])} />
+              <span className="text-[10px] text-slate-500 truncate">{STATUS_LABEL[s]}</span>
+              <span className="text-[10px] font-bold text-slate-600 ml-auto">{statusCounts[s]}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Toggle alunos */}
+      <button
+        onClick={() => setExpanded(v => !v)}
+        className="flex items-center justify-center gap-1.5 py-2.5 border-t border-slate-100 text-[11px] font-semibold text-faktory-blue hover:bg-blue-50 transition-colors w-full"
+      >
+        {expanded
+          ? <><ChevronUp size={12} /> Ocultar alunos</>
+          : <><ChevronDown size={12} /> Ver alunos ({trail.usersCount ?? trail.users.length})</>}
+      </button>
+
+      {/* Tabela de alunos */}
+      {expanded && (
+        <div className="border-t border-slate-100 px-4 pb-4 pt-3">
+          {trail.users.length === 0 ? (
+            <p className="text-sm text-slate-400 italic text-center py-3">Nenhum aluno nesta trilha.</p>
+          ) : (
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Aluno</th>
+                  <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</th>
+                  <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">%</th>
+                  <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Último acesso</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {trail.users.map(u => (
+                  <tr key={u.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="py-2 pr-3">
+                      <button className="flex items-center gap-2 text-left" onClick={() => onOpenUser(u, trail.title)}>
+                        {u.avatarUrl
+                          ? <img src={u.avatarUrl} alt={u.name} className="w-6 h-6 rounded-full object-cover shrink-0" />
+                          : <div className="w-6 h-6 bg-blue-50 rounded-full flex items-center justify-center text-faktory-blue shrink-0"><User size={11} /></div>}
+                        <div>
+                          <p className="text-xs font-semibold text-slate-700 hover:underline leading-tight">{u.name}</p>
+                          <p className="text-[10px] text-slate-400">{u.email}</p>
+                        </div>
+                      </button>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', STATUS_COLOR[u.userTrail.status])}>
+                        {STATUS_LABEL[u.userTrail.status]}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-12 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                          <div className="h-full bg-faktory-blue rounded-full" style={{ width: `${u.userTrail.totalProgress}%` }} />
+                        </div>
+                        <span className="text-[10px] font-bold text-slate-500">{u.userTrail.totalProgress}%</span>
+                      </div>
+                    </td>
+                    <td className="py-2 text-[10px] text-slate-500">{fmtDate(u.userTrail.lastAccess)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {trail.users.length > 0 && (
+            <div className="pt-3 flex items-center justify-between gap-3">
+              {trail.usersCount != null && (
+                <p className="text-[10px] text-slate-400">
+                  Mostrando <strong className="text-slate-600">{trail.users.length}</strong> de{' '}
+                  <strong className="text-slate-600">{trail.usersCount}</strong>
+                </p>
+              )}
+              {trailCursors[companyId]?.[trail.id] === null ? (
+                <p className="text-[10px] text-slate-400 italic ml-auto">Fim da lista</p>
+              ) : trailCursors[companyId]?.[trail.id] !== undefined ? (
+                <button
+                  disabled={!!trailUsersLoading[companyId]?.[trail.id]}
+                  onClick={() => onLoadMore(companyId, trail.id)}
+                  className="flex items-center gap-1 text-xs font-bold text-faktory-blue hover:underline disabled:opacity-50 ml-auto"
+                >
+                  {trailUsersLoading[companyId]?.[trail.id] && <Loader2 size={11} className="animate-spin" />}
+                  {trailUsersLoading[companyId]?.[trail.id] ? 'Carregando...' : 'Carregar mais'}
+                </button>
+              ) : null}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main component ──────────────────────────────────────────────────────────
 
 export default function AdminProjetos() {
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -58,8 +240,14 @@ export default function AdminProjetos() {
   const [companyLoading, setCompanyLoading] = useState<Record<string, boolean>>({});
   const [trailCursors, setTrailCursors] = useState<Record<string, Record<string, string | null>>>({});
   const [trailUsersLoading, setTrailUsersLoading] = useState<Record<string, Record<string, boolean>>>({});
-  const [expandedCompanies, setExpandedCompanies] = useState<Record<string, boolean>>({});
-  const [expandedTrail, setExpandedTrail] = useState<{ companyId: string; trailId: string } | null>(null);
+
+  // Filtros
+  const [searchName, setSearchName] = useState('');
+  const [filterCompany, setFilterCompany] = useState('');
+  const [filterMinProgress, setFilterMinProgress] = useState(0);
+  const [filterMaxProgress, setFilterMaxProgress] = useState(100);
+  const [filterUser, setFilterUser] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
 
   const [userModal, setUserModal] = useState<{ user: TrailUser; trailTitle: string } | null>(null);
   const [userSummary, setUserSummary] = useState<any>(null);
@@ -67,57 +255,35 @@ export default function AdminProjetos() {
 
   const [toast, setToast] = useState('');
   const toastRef = useRef<number | null>(null);
-  // Estável: só usa setter (estável) e ref (estável) — deps []
+
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     if (toastRef.current) window.clearTimeout(toastRef.current);
     toastRef.current = window.setTimeout(() => setToast(''), 3000);
   }, []);
 
-  useEffect(() => {
-    async function fetchCompanies() {
-      try {
-        const data = await api.get<Company[]>('/api/companies');
-        setCompanies(data);
-      } catch (err) {
-        console.error('Error fetching companies:', err);
-        showToast('Erro ao carregar empresas');
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchCompanies();
-  }, []);
-
-  // Recria quando companyData muda (leitura direta para early-return) ou showToast muda
-  const loadCompanyTrails = useCallback(async (companyId: string, forceRefresh = false, usersLimit = USERS_BATCH) => {
+  const loadCompanyTrails = useCallback(async (companyId: string, forceRefresh = false) => {
     if (companyData[companyId] && !forceRefresh) return;
     setCompanyLoading(prev => ({ ...prev, [companyId]: true }));
     try {
-      // Busca trilhas+usuários e contagens em paralelo para reduzir latência
       const [res, countsRes] = await Promise.all([
         api.get<CompanyTrailsWithUsersResponse>(
-          `/api/companies/${companyId}/trails-with-users?usersLimit=${usersLimit}`,
+          `/api/companies/${companyId}/trails-with-users?usersLimit=${USERS_BATCH}`,
         ),
         api.get<TrailsUsersCountsResponse>(
           `/api/companies/${companyId}/trails-users-counts`,
-        ).catch(() => null), // counts é opcional — não bloqueia se falhar
+        ).catch(() => null),
       ]);
 
-      // Monta mapa trailId → count para merge rápido O(1)
       const countMap = new Map<string, number>(
         (countsRes?.counts ?? []).map(c => [c.trailId, c.count]),
       );
-
-      // Merge: aplica usersCount do endpoint de contagens quando disponível
       const trails: TrailWithUsers[] = (res.trails ?? []).map(t => ({
         ...t,
         usersCount: countMap.has(t.id) ? (countMap.get(t.id) ?? t.usersCount) : t.usersCount,
       }));
 
       setCompanyData(prev => ({ ...prev, [companyId]: trails }));
-
-      // Registra o cursor inicial por trilha (tipado — sem cast)
       setTrailCursors(prev => {
         const byCompany = { ...(prev[companyId] || {}) };
         trails.forEach(t => { byCompany[t.id] = t.usersCursor; });
@@ -132,39 +298,50 @@ export default function AdminProjetos() {
     }
   }, [companyData, showToast]);
 
-  // Recria quando trailCursors muda (leitura dentro de attempt) ou showToast muda
+  useEffect(() => {
+    async function fetchAll() {
+      try {
+        const data = await api.get<Company[]>('/api/companies');
+        setCompanies(data);
+        await Promise.all(data.map(c => loadCompanyTrails(c.id)));
+      } catch (err) {
+        console.error('Error fetching companies:', err);
+        showToast('Erro ao carregar empresas');
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const loadMoreUsers = useCallback(async (companyId: string, trailId: string) => {
     setTrailUsersLoading(prev => ({
       ...prev,
       [companyId]: { ...(prev[companyId] ?? {}), [trailId]: true },
     }));
 
-    // Função interna de fetch — reutilizada pelo retry
     const attempt = async () => {
       const cursor = trailCursors[companyId]?.[trailId];
-      // Não envia trailId — o backend não suporta esse param;
-      // o cursor já é único por trilha pois é o último uid retornado
       const url =
         `/api/companies/${companyId}/trails-with-users` +
         `?usersLimit=${USERS_BATCH}` +
         (cursor ? `&usersCursor=${cursor}` : '');
 
       const res = await api.get<CompanyTrailsWithUsersResponse>(url);
-
-      // Localiza a trilha correta pelo id (não assume index 0)
       const fetched = (res.trails ?? []).find(t => t.id === trailId);
       if (fetched) {
         setCompanyData(prev => {
           const prevTrails = prev[companyId] ?? [];
-          const nextTrails = prevTrails.map(t => {
-            if (t.id !== trailId) return t;
-            const existingIds = new Set(t.users.map(u => u.id));
-            const newUsers = fetched.users.filter(u => !existingIds.has(u.id));
-            return { ...t, users: [...t.users, ...newUsers] };
-          });
-          return { ...prev, [companyId]: nextTrails };
+          return {
+            ...prev,
+            [companyId]: prevTrails.map(t => {
+              if (t.id !== trailId) return t;
+              const existingIds = new Set(t.users.map(u => u.id));
+              return { ...t, users: [...t.users, ...fetched.users.filter(u => !existingIds.has(u.id))] };
+            }),
+          };
         });
-        // Atualiza cursor (tipado — sem cast)
         setTrailCursors(prev => ({
           ...prev,
           [companyId]: { ...(prev[companyId] ?? {}), [trailId]: fetched.usersCursor },
@@ -174,14 +351,11 @@ export default function AdminProjetos() {
 
     try {
       await attempt();
-    } catch (firstErr) {
-      // 1 retry automático após 500 ms para falhas transitórias (rede, timeout)
-      console.warn('loadMoreUsers: primeira tentativa falhou, retentando em 500ms…', firstErr);
+    } catch {
       try {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(r => setTimeout(r, 500));
         await attempt();
-      } catch (retryErr) {
-        console.error('loadMoreUsers: retry também falhou', retryErr);
+      } catch {
         showToast('Erro ao carregar mais alunos. Tente novamente.');
       }
     } finally {
@@ -192,19 +366,6 @@ export default function AdminProjetos() {
     }
   }, [trailCursors, showToast]);
 
-  const toggleCompany = useCallback((companyId: string) => {
-    const isOpen = !!expandedCompanies[companyId];
-    setExpandedCompanies(prev => ({ ...prev, [companyId]: !isOpen }));
-    if (!isOpen) loadCompanyTrails(companyId);
-  }, [expandedCompanies, loadCompanyTrails]);
-
-  const toggleTrail = useCallback((companyId: string, trailId: string) => {
-    const same =
-      expandedTrail?.companyId === companyId && expandedTrail?.trailId === trailId;
-    setExpandedTrail(same ? null : { companyId, trailId });
-  }, [expandedTrail]);
-
-  // Só usa setters estáveis — deps []
   const openUserModal = useCallback(async (user: TrailUser, trailTitle: string) => {
     setUserModal({ user, trailTitle });
     setUserSummary(null);
@@ -219,6 +380,40 @@ export default function AdminProjetos() {
     }
   }, []);
 
+  // Lista plana de cards
+  const allCards: TrailCard[] = useMemo(() => {
+    const companyMap = new Map(companies.map(c => [c.id, c.name]));
+    return companies.flatMap(c =>
+      (companyData[c.id] ?? []).map(t => ({
+        ...t,
+        companyId: c.id,
+        companyName: companyMap.get(c.id) ?? c.id,
+      }))
+    );
+  }, [companies, companyData]);
+
+  // Aplica filtros
+  const filtered = useMemo(() => {
+    const nameLower = searchName.toLowerCase().trim();
+    const userLower = filterUser.toLowerCase().trim();
+    return allCards.filter(card => {
+      if (filterCompany && card.companyId !== filterCompany) return false;
+      if (nameLower && !card.title.toLowerCase().includes(nameLower)) return false;
+      const p = card.averageProgress ?? 0;
+      if (p < filterMinProgress || p > filterMaxProgress) return false;
+      if (userLower) {
+        const hasUser = card.users.some(
+          u => u.name.toLowerCase().includes(userLower) || u.email.toLowerCase().includes(userLower)
+        );
+        if (!hasUser) return false;
+      }
+      return true;
+    });
+  }, [allCards, searchName, filterCompany, filterMinProgress, filterMaxProgress, filterUser]);
+
+  const isAnyLoading = Object.values(companyLoading).some(Boolean);
+  const hasActiveFilters = !!(searchName || filterCompany || filterUser || filterMinProgress > 0 || filterMaxProgress < 100);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -229,253 +424,147 @@ export default function AdminProjetos() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800">Gestão de Projetos</h1>
-        <p className="text-slate-500 text-sm mt-1">
-          Empresas, trilhas ativas e progresso dos usuários.
-        </p>
-      </div>
-
-      <div className="space-y-4">
-        {companies.length === 0 ? (
-          <div className="p-12 text-center text-slate-400 bg-white rounded-xl border border-slate-200">
-            Nenhuma empresa cadastrada.
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">Gestão de Projetos</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            {filtered.length} trilha(s) · {companies.length} empresa(s)
+          </p>
+        </div>
+        {isAnyLoading && (
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <Loader2 size={13} className="animate-spin" /> Carregando trilhas...
           </div>
-        ) : (
-          companies.map(company => {
-            const trails = companyData[company.id] || [];
-            const isOpen = !!expandedCompanies[company.id];
-
-            return (
-              <div
-                key={company.id}
-                className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden"
-              >
-                <button
-                  className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors text-left"
-                  onClick={() => toggleCompany(company.id)}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center text-faktory-blue">
-                      <Users size={18} />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-slate-800">{company.name}</p>
-                      <p className="text-xs text-slate-400">
-                        {company.allowedTrails.length} trilha(s) permitida(s)
-                      </p>
-                    </div>
-                  </div>
-                  {isOpen
-                    ? <ChevronUp size={16} className="text-slate-400" />
-                    : <ChevronDown size={16} className="text-slate-400" />}
-                </button>
-
-                {isOpen && (
-                  <div className="border-t border-slate-100">
-                    {companyLoading[company.id] ? (
-                      <div className="p-8 flex justify-center">
-                        <Loader2 className="animate-spin text-faktory-blue" />
-                      </div>
-                    ) : trails.length === 0 ? (
-                      <div className="p-6 text-sm text-slate-400 text-center">
-                        Nenhuma trilha ativa para esta empresa.
-                      </div>
-                    ) : (
-                      trails.map(trail => {
-                        const isTrailOpen =
-                          expandedTrail?.companyId === company.id &&
-                          expandedTrail?.trailId === trail.id;
-
-                        return (
-                          <div key={trail.id} className="border-b border-slate-100 last:border-0">
-                            <div
-                              className="px-6 py-4 flex items-center justify-between cursor-pointer hover:bg-slate-50/60 transition-colors"
-                              onClick={() => toggleTrail(company.id, trail.id)}
-                            >
-                              <div className="flex items-center gap-3">
-                                <BookOpen size={15} className="text-orange-400 shrink-0" />
-                                <div>
-                                  <p className="text-sm font-bold text-slate-700">{trail.title}</p>
-                                  <p className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
-                                    <span className="flex items-center gap-1">
-                                      <BarChart2 size={10} />
-                                      {trail.modulesCount} módulo(s)
-                                    </span>
-                                    <span>·</span>
-                                    <span className="flex items-center gap-1">
-                                      <Clock size={10} />
-                                      {fmtDuration(trail.estimatedDurationMinutes)}
-                                    </span>
-                                    <span>·</span>
-                                    <span className="flex items-center gap-1">
-                                      <Users size={10} />
-                                      {trail.usersCount} aluno(s)
-                                    </span>
-                                  </p>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-6">
-                                <div className="flex items-center gap-2 min-w-[130px]">
-                                  <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                    <div
-                                      className="h-full bg-faktory-blue rounded-full transition-all"
-                                      style={{ width: `${trail.averageProgress}%` }}
-                                    />
-                                  </div>
-                                  <span className="text-xs font-bold text-slate-500 w-9 text-right">
-                                    {trail.averageProgress}%
-                                  </span>
-                                </div>
-                                {isTrailOpen
-                                  ? <ChevronUp size={14} className="text-slate-400" />
-                                  : <ChevronDown size={14} className="text-slate-400" />}
-                              </div>
-                            </div>
-
-                            {isTrailOpen && (
-                              <div className="px-6 pb-5">
-                                {trail.users.length === 0 ? (
-                                  <p className="text-sm text-slate-400 italic py-2">
-                                    Nenhum aluno nesta trilha.
-                                  </p>
-                                ) : (
-                                  <table className="w-full text-left mt-1">
-                                    <thead>
-                                      <tr className="border-b border-slate-100">
-                                        <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Aluno</th>
-                                        <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</th>
-                                        <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Progresso</th>
-                                        <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Último acesso</th>
-                                        <th className="pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Início</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-50">
-                                      {trail.users.map(u => (
-                                        <tr key={u.id} className="hover:bg-slate-50/50 transition-colors">
-                                          <td className="py-2.5 pr-4">
-                                            <button
-                                              className="flex items-center gap-2 text-left"
-                                              onClick={() => openUserModal(u, trail.title)}
-                                            >
-                                              {u.avatarUrl ? (
-                                                <img
-                                                  src={u.avatarUrl}
-                                                  alt={u.name}
-                                                  className="w-7 h-7 rounded-full object-cover shrink-0"
-                                                />
-                                              ) : (
-                                                <div className="w-7 h-7 bg-blue-50 rounded-full flex items-center justify-center text-faktory-blue shrink-0">
-                                                  <User size={12} />
-                                                </div>
-                                              )}
-                                              <div>
-                                                <p className="text-sm font-semibold text-slate-700 hover:underline leading-tight">
-                                                  {u.name}
-                                                </p>
-                                                <p className="text-[10px] text-slate-400">{u.email}</p>
-                                              </div>
-                                            </button>
-                                          </td>
-
-                                          <td className="py-2.5 pr-4">
-                                            <span
-                                              className={cn(
-                                                'text-[10px] font-bold px-2 py-0.5 rounded-full',
-                                                STATUS_COLOR[u.userTrail.status],
-                                              )}
-                                            >
-                                              {STATUS_LABEL[u.userTrail.status]}
-                                            </span>
-                                          </td>
-
-                                          <td className="py-2.5 pr-4">
-                                            <div className="flex items-center gap-2">
-                                              <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                                <div
-                                                  className="h-full bg-faktory-blue rounded-full"
-                                                  style={{ width: `${u.userTrail.totalProgress}%` }}
-                                                />
-                                              </div>
-                                              <span className="text-xs font-bold text-slate-500">
-                                                {u.userTrail.totalProgress}%
-                                              </span>
-                                            </div>
-                                          </td>
-
-                                          <td className="py-2.5 pr-4 text-xs text-slate-500">
-                                            {fmtDate(u.userTrail.lastAccess)}
-                                          </td>
-
-                                          <td className="py-2.5 text-xs text-slate-500">
-                                            {fmtDate(u.userTrail.startedAt)}
-                                          </td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                )}
-
-                                {/* footer: contador "Mostrando X de Y" + paginação */}
-                                {trail.users.length > 0 && (
-                                  <div className="pt-3 flex items-center justify-between gap-4">
-                                    {trail.usersCount != null && (
-                                      <p className="text-xs text-slate-400">
-                                        Mostrando{' '}
-                                        <strong className="text-slate-600">{trail.users.length}</strong>
-                                        {' '}de{' '}
-                                        <strong className="text-slate-600">{trail.usersCount}</strong>
-                                        {' '}aluno(s)
-                                      </p>
-                                    )}
-
-                                    {/* cursor === null → fim real confirmado pelo backend */}
-                                    {trailCursors[company.id]?.[trail.id] === null ? (
-                                      <p className="text-xs text-slate-400 italic ml-auto">
-                                        Fim da lista
-                                      </p>
-                                    ) : trailCursors[company.id]?.[trail.id] !== undefined ? (
-                                      <button
-                                        disabled={!!trailUsersLoading[company.id]?.[trail.id]}
-                                        onClick={() => loadMoreUsers(company.id, trail.id)}
-                                        className="flex items-center gap-1.5 text-sm font-bold text-faktory-blue hover:underline disabled:opacity-50 disabled:cursor-not-allowed ml-auto"
-                                      >
-                                        {!!trailUsersLoading[company.id]?.[trail.id] && (
-                                          <Loader2 size={12} className="animate-spin" />
-                                        )}
-                                        {trailUsersLoading[company.id]?.[trail.id]
-                                          ? 'Carregando...'
-                                          : 'Carregar mais alunos'}
-                                      </button>
-                                    ) : null}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })
         )}
       </div>
 
+      {/* Barra de filtros */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Busca por nome */}
+          <div className="relative flex-1 min-w-[180px]">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Buscar por projeto..."
+              value={searchName}
+              onChange={e => setSearchName(e.target.value)}
+              className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-faktory-blue/30"
+            />
+          </div>
+
+          {/* Filtro empresa */}
+          <div className="relative min-w-[180px]">
+            <Building2 size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <select
+              value={filterCompany}
+              onChange={e => setFilterCompany(e.target.value)}
+              className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-faktory-blue/30 appearance-none bg-white"
+            >
+              <option value="">Todas as empresas</option>
+              {companies.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Filtros avançados toggle */}
+          <button
+            onClick={() => setShowFilters(v => !v)}
+            className={cn(
+              'flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors',
+              showFilters
+                ? 'bg-faktory-blue text-white border-faktory-blue'
+                : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+            )}
+          >
+            <SlidersHorizontal size={14} />
+            Filtros avançados
+          </button>
+
+          {hasActiveFilters && (
+            <button
+              onClick={() => { setSearchName(''); setFilterCompany(''); setFilterUser(''); setFilterMinProgress(0); setFilterMaxProgress(100); }}
+              className="text-xs text-slate-400 hover:text-slate-600 underline"
+            >
+              Limpar filtros
+            </button>
+          )}
+        </div>
+
+        {showFilters && (
+          <div className="pt-3 border-t border-slate-100 flex flex-wrap gap-5 items-end">
+            {/* Busca por usuário */}
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">
+                Usuário
+              </label>
+              <div className="relative">
+                <User size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Nome ou e-mail..."
+                  value={filterUser}
+                  onChange={e => setFilterUser(e.target.value)}
+                  className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-faktory-blue/30"
+                />
+              </div>
+            </div>
+
+            {/* Range de progresso */}
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">
+                Progresso médio: {filterMinProgress}% – {filterMaxProgress}%
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range" min={0} max={100} step={5}
+                  value={filterMinProgress}
+                  onChange={e => setFilterMinProgress(Math.min(Number(e.target.value), filterMaxProgress))}
+                  className="flex-1 accent-faktory-blue"
+                />
+                <input
+                  type="range" min={0} max={100} step={5}
+                  value={filterMaxProgress}
+                  onChange={e => setFilterMaxProgress(Math.max(Number(e.target.value), filterMinProgress))}
+                  className="flex-1 accent-faktory-blue"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Grid de cards */}
+      {filtered.length === 0 ? (
+        <div className="p-12 text-center text-slate-400 bg-white rounded-xl border border-slate-200">
+          {allCards.length === 0 ? 'Nenhuma trilha encontrada.' : 'Nenhuma trilha corresponde aos filtros.'}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          {filtered.map(card => (
+            <TrailCardView
+              key={`${card.companyId}-${card.id}`}
+              trail={card}
+              companyId={card.companyId}
+              trailCursors={trailCursors}
+              trailUsersLoading={trailUsersLoading}
+              onLoadMore={loadMoreUsers}
+              onOpenUser={openUserModal}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Modal de usuário */}
       {userModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden">
             <div className="p-6 border-b border-slate-100 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {userModal.user.avatarUrl ? (
-                  <img
-                    src={userModal.user.avatarUrl}
-                    alt={userModal.user.name}
-                    className="w-10 h-10 rounded-full object-cover"
-                  />
+                  <img src={userModal.user.avatarUrl} alt={userModal.user.name} className="w-10 h-10 rounded-full object-cover" />
                 ) : (
                   <div className="w-10 h-10 bg-blue-50 rounded-full flex items-center justify-center text-faktory-blue">
                     <User size={18} />
@@ -486,10 +575,7 @@ export default function AdminProjetos() {
                   <p className="text-xs text-slate-400">{userModal.user.email}</p>
                 </div>
               </div>
-              <button
-                onClick={() => setUserModal(null)}
-                className="text-slate-400 hover:text-slate-600 p-1"
-              >
+              <button onClick={() => setUserModal(null)} className="text-slate-400 hover:text-slate-600 p-1">
                 <X size={18} />
               </button>
             </div>
@@ -507,41 +593,27 @@ export default function AdminProjetos() {
                       <div key={t.id || t.trailId} className="p-4 bg-slate-50 rounded-lg">
                         <div className="flex items-center justify-between mb-2">
                           <p className="text-sm font-bold text-slate-700">{t.title}</p>
-                          <span
-                            className={cn(
-                              'text-[10px] font-bold px-2 py-0.5 rounded-full',
-                              STATUS_COLOR[status] || 'text-slate-400 bg-slate-100',
-                            )}
-                          >
+                          <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', STATUS_COLOR[status] || 'text-slate-400 bg-slate-100')}>
                             {STATUS_LABEL[status] || status}
                           </span>
                         </div>
                         <div className="flex items-center gap-2 mb-2">
                           <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-faktory-blue rounded-full"
-                              style={{ width: `${t.totalProgress ?? 0}%` }}
-                            />
+                            <div className="h-full bg-faktory-blue rounded-full" style={{ width: `${t.totalProgress ?? 0}%` }} />
                           </div>
-                          <span className="text-xs font-bold text-slate-500">
-                            {t.totalProgress ?? 0}%
-                          </span>
+                          <span className="text-xs font-bold text-slate-500">{t.totalProgress ?? 0}%</span>
                         </div>
                         <div className="flex gap-4 text-[10px] text-slate-400">
                           <span>Início: {fmtDate(t.startedAt)}</span>
                           <span>Conclusão: {fmtDate(t.completedAt)}</span>
-                          {t.currentModule && (
-                            <span>Módulo atual: {t.currentModule.title}</span>
-                          )}
+                          {t.currentModule && <span>Módulo atual: {t.currentModule.title}</span>}
                         </div>
                       </div>
                     );
                   })}
                 </div>
               ) : (
-                <p className="text-sm text-slate-400 text-center py-6">
-                  Nenhum dado disponível para este usuário.
-                </p>
+                <p className="text-sm text-slate-400 text-center py-6">Nenhum dado disponível para este usuário.</p>
               )}
             </div>
           </div>
