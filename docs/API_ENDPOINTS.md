@@ -635,15 +635,19 @@ Lista membros e convites pendentes da empresa.
   members: Array<{
     type: 'member';
     uid: string;
+    id: string;            // alias de uid, para compatibilidade
     name: string;
     email: string;
-    role: string;
-    status: string;
-    // ... outros campos
+    role: string;          // join com users/{uid} — sempre presente
+    lastLoginAt: string | null; // join com users/{uid}
+    companyId: string;
+    status?: string;
+    // ... outros campos do doc companies/{id}/users/{uid}
   }>;
   pendingInvites: Array<{
     type: 'invite';
     inviteId: string;
+    id: string;            // alias de inviteId
     email: string;
     name: string | null;
     expiresAt: string;
@@ -651,6 +655,130 @@ Lista membros e convites pendentes da empresa.
   }>;
 }
 ```
+
+> **Atualizado (2026-05-05):** Cada membro agora inclui `role` e `lastLoginAt` obtidos via join com a coleção global `users/{uid}`. Antes esses campos podiam estar ausentes quando o doc de subcoleção não os tinha.
+
+---
+
+### GET /api/companies/:companyId/trails/:trailId/users-report
+Relatório detalhado de todos os usuários da empresa em uma trilha específica.
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Autorização:**
+- `superadmin` → qualquer empresa
+- `company_admin` → apenas própria empresa
+
+**Resposta:**
+```typescript
+{
+  companyId: string;
+  trailId: string;
+  trailTitle: string | null;
+  generatedAt: string;         // ISO timestamp
+  users: Array<{
+    userId: string;
+    name: string | null;
+    email: string | null;
+    status: 'not_started' | 'in_progress' | 'completed' | 'overdue';
+    totalProgress: number;     // 0–100
+    startedAt: string | null;
+    lastAccess: string | null;
+    completedAt: string | null;
+    moduleProgress: Array<{
+      moduleId: string;
+      title: string | null;
+      progress: number;          // 0–100
+      completedLessons: number;
+      totalLessons: number;
+      etapas: Array<{            // NOVO — hierarquia completa
+        etapaId: string;
+        title: string | null;
+        completed: boolean;
+        subetapas: Array<{
+          subetapaId: string;
+          title: string | null;
+          completed: boolean;
+        }>;
+      }>;
+    }>;
+  }>;
+}
+```
+
+> **Atualizado (2026-05-05):** `moduleProgress` agora inclui `etapas[]` e `subetapas[]` com status `completed` por item, além dos contadores de módulo já existentes.
+
+**Exemplo:**
+```typescript
+const report = await fetch(
+  `/api/companies/${companyId}/trails/${trailId}/users-report`,
+  { headers: { Authorization: `Bearer ${token}` } }
+).then(r => r.json());
+```
+
+---
+
+### GET /api/companies/:companyId/trails/:trailId/users/:userId/detail
+Progresso detalhado de **um único usuário** em uma trilha, com hierarquia completa módulo → etapa → subetapa.
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Autorização:**
+- `superadmin` → qualquer empresa/usuário
+- `company_admin` → apenas própria empresa
+- Próprio usuário (`userId == req.user.uid`) → acesso permitido
+
+**Resposta:**
+```typescript
+{
+  companyId: string;
+  trailId: string;
+  trailTitle: string | null;
+  userId: string;
+  name: string | null;
+  email: string | null;
+  totalProgress: number;       // 0–100
+  status: 'not_started' | 'in_progress' | 'completed' | 'overdue';
+  startedAt: string | null;
+  lastAccessAt: string | null;
+  completedAt: string | null;
+  modules: Array<{
+    moduleId: string;
+    title: string | null;
+    order: number | null;
+    progress: number;            // 0–100
+    completedLessons: number;
+    totalLessons: number;
+    etapas: Array<{
+      etapaId: string;
+      title: string | null;
+      type: string | null;
+      completed: boolean;
+      completedAt: string | null;
+      lastAccessAt: string | null;
+      progress: number;          // % dentro da etapa (inclui subetapas)
+      subetapas: Array<{
+        subetapaId: string;
+        title: string | null;
+        type: string | null;
+        completed: boolean;
+        completedAt: string | null;
+        lastAccessAt: string | null;
+      }>;
+    }>;
+  }>;
+}
+```
+
+**Exemplo:**
+```typescript
+const detail = await fetch(
+  `/api/companies/${companyId}/trails/${trailId}/users/${userId}/detail`,
+  { headers: { Authorization: `Bearer ${token}` } }
+).then(r => r.json());
+```
+
+> **Novo endpoint (2026-05-05).** Ideal para a tela de detalhe de usuário dentro de um projeto/trilha no painel do cliente.
 
 ---
 
@@ -683,6 +811,481 @@ await fetch(`/api/companies/${companyId}/members/${uid}/status`, {
   body: JSON.stringify({ status: 'inactive' })
 });
 ```
+
+---
+
+## 📝 QUESTIONÁRIOS
+
+### POST /api/projects/:projectId/questionnaires
+Cria um questionário vinculado a um projeto (ou trilha — fallback automático se o ID pertencer a uma trilha).
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Body:**
+```typescript
+{
+  title: string;
+  description?: string;
+  moduleId?: string;
+  questions: Array<{
+    id?: string;         // gerado automaticamente se omitido
+    text: string;
+    type: 'single_choice' | 'multiple_choice' | 'open';
+    points: number;
+    order?: number;
+    options: Array<{     // omitir para type='open'
+      text: string;
+      isCorrect: boolean;
+    }>;
+  }>;
+}
+```
+
+**Resposta:** `{ id: string }`
+
+---
+
+### GET /api/projects/:projectId/questionnaires
+Lista questionários do projeto. Alunos **não** recebem o campo `isCorrect` nas opções.
+
+**Auth:** `requireAuth`
+
+**Query params:** `?moduleId={id}` — filtra por módulo
+
+**Autorização:**
+- Admin/company_admin → dados completos (com `isCorrect`)
+- Aluno com acesso ao projeto → dados sem `isCorrect`
+
+**Resposta:** `QuestionnaireRecord[]`
+
+---
+
+### GET /api/questionnaires/:id
+Busca um questionário pelo ID (root ou subcoleção de trilha — busca automática).
+
+**Auth:** `requireAuth`
+
+**Autorização:**
+- Questionário de projeto: usuário precisa ter acesso ao projeto
+- Questionário de trilha: usuário precisa ter a trilha em `allowedTrails` ou matrícula em `userTrails`
+- Admin/company_admin: acesso irrestrito
+
+**Resposta:** `QuestionnaireRecord` (sem `isCorrect` para alunos)
+
+---
+
+### PUT /api/questionnaires/:id
+Atualiza título, descrição, moduleId e questões.
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Body:** mesmo shape do POST (title, questions obrigatórios)
+
+**Resposta:** `{ success: true }`
+
+---
+
+### DELETE /api/questionnaires/:id
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Resposta:** `{ success: true }`
+
+---
+
+### POST /api/trails/:trailId/questionnaires
+Cria questionário vinculado ao template de trilha (salvo em `trails/{trailId}/questionnaires`).
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Body:** mesmo shape do POST de projeto
+
+**Resposta:** `{ id: string }`
+
+---
+
+### GET /api/trails/:trailId/questionnaires
+Lista questionários do template de trilha.
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Resposta:** `QuestionnaireRecord[]`
+
+---
+
+### GET /api/trails/:trailId/questionnaires/:id
+Busca questionário específico da trilha.
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Resposta:** `QuestionnaireRecord`
+
+---
+
+### PUT /api/trails/:trailId/questionnaires/:id
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Body:** mesmo shape do PUT raiz
+
+**Resposta:** `{ success: true }`
+
+---
+
+## 🎯 TENTATIVAS (Aluno executa questionário)
+
+### POST /api/questionnaires/:id/attempts
+Inicia uma nova tentativa. Retorna `attemptId`.
+
+**Auth:** `requireAuth`
+
+**Body:**
+```typescript
+{
+  trailId?: string;       // recomendado — usado para vincular ao enrollment
+  enrollmentId?: string;  // alternativa mais eficiente ao trailId
+}
+```
+
+**Resposta:**
+```typescript
+{
+  attemptId: string;
+  questionnaireId: string;
+  startedAt: string;
+}
+```
+
+---
+
+### GET /api/attempts/:attemptId
+Retorna status da tentativa.
+
+**Auth:** `requireAuth`
+
+**Autorização:** próprio usuário ou admin
+
+**Resposta:** `AttemptRecord`
+
+---
+
+### POST /api/attempts/:attemptId/submit
+Submete respostas e calcula score. Questões `open` ficam com `isCorrect: false` (revisão manual).
+
+**Auth:** `requireAuth` (apenas o dono da tentativa)
+
+**Body:**
+```typescript
+{
+  answers: Array<{
+    questionId: string;
+    selectedOptionIds?: string[];  // para single/multiple_choice
+    textAnswer?: string;           // para open
+  }>;
+  trailId?: string;       // para vincular ao enrollment
+  enrollmentId?: string;
+}
+```
+
+**Resposta:**
+```typescript
+{
+  attemptId: string;
+  submittedAt: string;
+  score: number;
+  maxScore: number;
+  perQuestion: Array<{
+    questionId: string;
+    isCorrect: boolean;
+    pointsAwarded: number;
+  }>;
+}
+```
+
+---
+
+### GET /api/users/:userId/attempts
+Lista tentativas do usuário, com filtros opcionais.
+
+**Auth:** `requireAuth`
+
+**Autorização:** próprio usuário ou admin
+
+**Query params:** `?projectId=&questionnaireId=&status=`
+
+**Resposta:** `AttemptRecord[]`
+
+---
+
+### GET /api/questionnaires/:id/results
+Resultados agregados do questionário (admin).
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Resposta:**
+```typescript
+{
+  questionnaireId: string;
+  title: string;
+  totalAttempts: number;
+  avgScore: number;
+  questions: Array<{
+    questionId: string;
+    text: string;
+    type: string;
+    totalAnswers: number;
+    correctRate: number;  // 0–1
+  }>;
+}
+```
+
+---
+
+### POST /api/questionnaires/:id/duplicate
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Resposta:** `{ id: string }` — ID do novo questionário criado
+
+---
+
+### GET /api/projects/:projectId/users-progress
+Progresso de todos os usuários de um projeto (tabela admin).
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Resposta:** array com progresso por usuário
+
+---
+
+### GET /api/projects/:projectId/attempts-to-grade
+Lista tentativas com questões abertas pendentes de revisão manual.
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Resposta:** `AttemptRecord[]` com status `submitted` e questões `open`
+
+---
+
+### POST /api/attempts/:attemptId/grade
+Avalia manualmente uma tentativa com questões abertas.
+
+**Auth:** `requireAuth` + `requireCompanyAdmin`
+
+**Body:**
+```typescript
+{
+  grades: Array<{
+    questionId: string;
+    pointsAwarded: number;
+    feedback?: string;
+  }>;
+}
+```
+
+**Resposta:** `AttemptRecord` atualizado
+
+---
+
+## ✅ TAREFAS (Tasks)
+
+> Tarefas são atividades vinculadas a etapas/subetapas de projetos. Tipos: `signature`, `questionnaire`, `image_upload`.
+
+### POST /api/projects/:projectId/modules/:moduleId/etapas/:etapaId/tasks
+Cria tarefa vinculada a uma etapa.
+
+**Auth:** `requireAuth` + `requireAdmin`
+
+**Body:**
+```typescript
+{
+  type: 'signature' | 'questionnaire' | 'image_upload';
+  title: string;
+  description?: string;
+  config: object;          // varia por tipo
+  order?: number;
+  isRequired?: boolean;    // default: true
+  pointsValue?: number;
+}
+```
+
+**Resposta:** `TaskRecord` (HTTP 201)
+
+---
+
+### POST /api/projects/:projectId/modules/:moduleId/etapas/:etapaId/subetapas/:subetapaId/tasks
+Cria tarefa vinculada a uma subetapa.
+
+**Auth:** `requireAuth` + `requireAdmin`
+
+**Body:** mesmo shape acima
+
+**Resposta:** `TaskRecord` (HTTP 201)
+
+---
+
+### GET /api/projects/:projectId/modules/:moduleId/etapas/:etapaId/tasks
+Lista tarefas de uma etapa (ou subetapa via query param).
+
+**Auth:** `requireAuth`
+
+**Query params:** `?subetapaId={id}` — filtra por subetapa
+
+**Resposta:** `TaskRecord[]` ordenado por `order`
+
+---
+
+### GET /api/tasks/:taskId
+
+**Auth:** `requireAuth`
+
+**Resposta:** `TaskRecord`
+
+---
+
+### PUT /api/tasks/:taskId
+
+**Auth:** `requireAuth` + `requireAdmin`
+
+**Body:** campos opcionais: `title`, `description`, `config`, `order`, `isRequired`, `pointsValue`
+
+**Resposta:** `TaskRecord` atualizado
+
+---
+
+### DELETE /api/tasks/:taskId
+Remove a tarefa e todos os `taskCompletions` vinculados. Remove referência da etapa/subetapa atomicamente (transação Firestore).
+
+**Auth:** `requireAuth` + `requireAdmin`
+
+**Resposta:** HTTP 204 (sem body)
+
+---
+
+### POST /api/tasks/:taskId/start
+Inicia uma tarefa para o usuário autenticado (cria `taskCompletion` com status `pending`). Idempotente — retorna o existente se já iniciado.
+
+**Auth:** `requireAuth`
+
+**Body:**
+```typescript
+{
+  trailId?: string;
+  enrollmentId?: string;
+}
+```
+
+**Resposta:** `TaskCompletionRecord` (HTTP 201 ou 200 se já existia)
+
+---
+
+### POST /api/tasks/:taskId/complete
+Completa uma tarefa auto-corrigida (`signature` ou `questionnaire`).
+
+**Auth:** `requireAuth`
+
+**Body (signature):**
+```typescript
+{
+  signedText: string;
+  typedConfirmation?: string;
+  ipAddress?: string;
+  trailId?: string;
+}
+```
+
+**Body (questionnaire):**
+```typescript
+{
+  attemptId: string;
+  score: number;
+  maxScore: number;
+  trailId?: string;
+}
+```
+
+**Resposta:** `TaskCompletionRecord`
+
+---
+
+### POST /api/tasks/:taskId/submit
+Submete tarefa do tipo `image_upload` para revisão manual (status → `pending`).
+
+**Auth:** `requireAuth`
+
+**Body:**
+```typescript
+{
+  uploadedFileUrl: string;
+  fileName: string;
+  fileSize: number;
+  fileMimeType: string;
+  trailId?: string;
+}
+```
+
+**Resposta:** `TaskCompletionRecord`
+
+---
+
+### GET /api/users/:userId/tasks/:taskId/status
+Status atual de uma tarefa para o usuário.
+
+**Auth:** `requireAuth` (próprio usuário ou admin)
+
+**Resposta:** `TaskCompletionRecord`
+
+---
+
+### GET /api/users/:userId/tasks
+Lista todos os completions de tarefas do usuário.
+
+**Auth:** `requireAuth` (próprio usuário ou admin)
+
+**Query params:** `?projectId=&status=pending|completed|rejected&type=signature|questionnaire|image_upload`
+
+**Resposta:** `TaskCompletionRecord[]`
+
+---
+
+### GET /api/projects/:projectId/tasks/pending
+Lista tarefas `image_upload` pendentes de revisão (admin).
+
+**Auth:** `requireAuth` + `requireAdmin`
+
+**Resposta:** array enriquecido com dados do usuário e da task:
+```typescript
+Array<TaskCompletionRecord & {
+  user: { name: string; email: string } | null;
+  task: { title: string; type: string } | null;
+}>
+```
+
+---
+
+### PUT /api/tasks/:taskId/completions/:completionId/review
+Aprova ou reprova uma tarefa `image_upload`.
+
+**Auth:** `requireAuth` + `requireAdmin`
+
+**Body:**
+```typescript
+{
+  status: 'completed' | 'rejected';
+  notes?: string;
+}
+```
+
+**Resposta:** `TaskCompletionRecord` atualizado
+
+---
+
+### GET /api/tasks/:taskId/completions
+Histórico de todos os completamentos de uma tarefa.
+
+**Auth:** `requireAuth` + `requireAdmin`
+
+**Resposta:** `TaskCompletionRecord[]` ordenado por `startedAt` desc
 
 ---
 
@@ -753,6 +1356,8 @@ Progresso de um usuário específico no projeto.
 |----------|----------|-------|
 | `/api/users/:uid/progress` | Trilhas (vídeos/lições) | Subcoleção `users/{uid}/progress` |
 | `/api/users/:uid/trails` | Trilhas consolidadas | Coleção `userTrails` |
+| `/api/companies/:cId/trails/:tId/users-report` | Todos usuários de uma trilha (admin) | `userTrails` + `users/{uid}/progress` |
+| `/api/companies/:cId/trails/:tId/users/:uId/detail` | Detalhe de um usuário (módulo→etapa→subetapa) | `userTrails` + `users/{uid}/progress` |
 | `/api/projects/:projectId/users/:userId/progress` | Projetos (questionários) | Coleções `questionnaires` + `attempts` |
 
 **Não confundir:** São sistemas paralelos para tipos diferentes de conteúdo.
