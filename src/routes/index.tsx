@@ -7,6 +7,7 @@ import Home from '../pages/public/Home';
 import Login from '../pages/public/Login';
 import Register from '../pages/public/Register';
 import CadastroUsuario from '../pages/public/CadastroUsuario';
+import CadastroConsultor from '../pages/public/CadastroConsultor';
 import AuthAcao from '../pages/public/AuthAcao';
 
 // Admin Pages
@@ -22,6 +23,7 @@ import AdminPosts from '../pages/admin/Posts';
 import PlaceholderPage from '../pages/admin/Placeholder';
 import Cronograma from '../pages/admin/Cronograma';
 import AdminTasksReview from '../pages/admin/TasksReview';
+import AdminConsultores from '../pages/admin/Consultores';
 
 // Empresa (company_admin) Pages
 import EmpresaDashboard from '../pages/empresa/Dashboard';
@@ -75,6 +77,7 @@ export default function AppRoutes() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/cadastro" element={<CadastroUsuario />} />
+        <Route path="/cadastro-consultor" element={<CadastroConsultor />} />
         <Route path="/auth/acao" element={<AuthAcao />} />
       </Route>
 
@@ -106,6 +109,7 @@ export default function AppRoutes() {
         <Route path="posts" element={<AdminPosts />} />
         <Route path="relatorios" element={<AdminRelatorios />} />
         <Route path="configuracoes" element={<AdminConfiguracoes />} />
+        <Route path="consultores" element={<AdminConsultores />} />
       </Route>
 
       {/* Empresa (company_admin) Routes */}
