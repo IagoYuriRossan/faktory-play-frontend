@@ -62,6 +62,7 @@ export default function LayoutAdmin() {
         { label: 'Clientes', icon: Users, path: '/admin/clientes', color: 'text-blue-500' },
         { label: 'Projetos', icon: Layers, path: '/admin/projetos', color: 'text-orange-500' },
         { label: 'Convites', icon: Mail, path: '/admin/convites', color: 'text-purple-500' },
+        { label: 'Consultores', icon: Users, path: '/admin/consultores', color: 'text-violet-500' },
       ]
     },
     {
