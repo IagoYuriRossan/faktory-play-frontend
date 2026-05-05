@@ -124,7 +124,7 @@ export default function AdminClientes() {
       };
 
       if (isEditing && editingCompanyId) {
-        await api.put(`/api/companies/${editingCompanyId}`, payload);
+        await api.patch(`/api/companies/${editingCompanyId}`, payload);
         showToast('success', 'Empresa atualizada com sucesso.');
       } else {
         await api.post('/api/companies', {
