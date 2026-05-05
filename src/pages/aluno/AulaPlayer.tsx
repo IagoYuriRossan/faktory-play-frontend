@@ -364,7 +364,19 @@ export default function AlunoAulaPlayer() {
           if (trailData.modules && trailData.modules[0]) setExpandedModules([trailData.modules[0].id]);
         }
 
-        // 2. Fetch granular progress for this trail
+        // 2. Fetch enrollment ID real + granular progress for this trail
+        // O enrollmentId real é o ID do documento userTrails (usado para vincular tentativas de questionário ao relatório do admin)
+        let realEnrollmentId = `${user.id}_${id}`; // fallback convencional
+        try {
+          const userTrails = await api.get<any[]>(`/api/users/${user.id}/trails`);
+          const match = Array.isArray(userTrails)
+            ? userTrails.find((t: any) => t.trailId === id || t.id === id || t.id === `${user.id}_${id}`)
+            : null;
+          if (match?.id) realEnrollmentId = match.id;
+        } catch {
+          // silencioso — usa o fallback convencional
+        }
+
         try {
           const progressData = await api.get<{ etapas: any[]; subetapas: any[]; tasks: any[] }>(
             `/api/users/${user.id}/progress/trail/${id}`
@@ -375,7 +387,7 @@ export default function AlunoAulaPlayer() {
           const progressPct = Math.round((completedLessons.length / totalLessons) * 100);
 
           setEnrollment({
-            id: `enrollment-${id}`,
+            id: realEnrollmentId,
             userId: user.id,
             trailId: id,
             progress: progressPct,
@@ -387,7 +399,7 @@ export default function AlunoAulaPlayer() {
         } catch (err) {
           console.warn('Error fetching progress details, using defaults:', err);
           setEnrollment({
-            id: `enrollment-${id}`,
+            id: realEnrollmentId,
             userId: user.id,
             trailId: id,
             progress: 0,
